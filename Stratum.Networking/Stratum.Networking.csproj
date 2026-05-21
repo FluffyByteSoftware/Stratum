@@ -15,4 +15,10 @@
     <ProjectReference Include="..\Stratum.SystemTools\Stratum.SystemTools.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Dispatch\" />
+    <Folder Include="Tcp\" />
+    <Folder Include="Udp\" />
+  </ItemGroup>
+
 </Project>

@@ -1,7 +1,7 @@
 /*
  * (Ed25519Verifier.cs)
  *------------------------------------------------------------
- * Created - 5/19/2026 7:00:33 AM
+ * Created - 5/20/2026 11:03:23 PM
  * Created by - Seliris
  *-------------------------------------------------------------
  */
@@ -12,23 +12,18 @@ using Stratum.SystemTools.Logger;
 
 namespace Stratum.SystemTools.Security;
 
+/// <summary>
+/// Provides Ed25519 signature verification functionality.
+/// </summary>
 public static class Ed25519Verifier
 {
-    /// <summary>
-    /// The size of a public key in bytes.
-    /// </summary>
-    public const int PublicKeySize = 32;
-    /// <summary>
-    /// The size of a signature in bytes.
-    /// </summary>
-    public const int SignatureSize = 64;
+    private const int PublicKeyLength = 32;
+    private const int SignatureLength = 64;
 
     /// <summary>
-    /// Verifies an Ed25519 signature against a message using the specified public key.
+    /// Verifies an Ed25519 signature against a message using the provided public key.
     /// </summary>
-    /// <remarks>Returns <see langword="false"/> if the public key or signature length is invalid, or
-    /// if verification fails due to an exception.</remarks>
-    /// <param name="publicKey">The Ed25519 public key to use for verification.</param>
+    /// <param name="publicKey">The Ed25519 public key used for verification.</param>
     /// <param name="message">The message that was signed.</param>
     /// <param name="signature">The Ed25519 signature to verify.</param>
     /// <returns><see langword="true"/> if the signature is valid; otherwise, <see langword="false"/>.</returns>
@@ -37,36 +32,37 @@ public static class Ed25519Verifier
         ReadOnlySpan<byte> message,
         ReadOnlySpan<byte> signature)
     {
-        if (publicKey.Length != PublicKeySize) return false;
-        if (signature.Length != SignatureSize) return false;
+        if (publicKey.Length != PublicKeyLength) return false;
+        if (signature.Length != SignatureLength) return false;
 
         try
         {
-            var keyParams = new Ed25519PublicKeyParameters(
-                publicKey.ToArray(), 0);
+            var keyParams = new Ed25519PublicKeyParameters(publicKey.ToArray(), 0);
 
-            var verifier = new Ed25519Signer();
+            var signer = new Ed25519Signer();
+            signer.Init(forSigning: false, keyParams);
 
-            verifier.Init(false, keyParams);
+            var msgBytes = message.ToArray();
+            signer.BlockUpdate(msgBytes, 0, msgBytes.Length);
 
-            var messageBytes = message.ToArray();
-            verifier.BlockUpdate(messageBytes, 0, messageBytes.Length);
-
-            return verifier.VerifySignature(signature.ToArray());
+            return signer.VerifySignature(signature.ToArray());
         }
         catch(Exception ex)
         {
-            Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
-                $"Failed to verify Ed25519 signature.", ex));
+            Scribe.Pump(new ScribeMessage(
+                ScribeSeverity.Warn,
+                "Ed25519 signature verification failed due to an exception.", ex));
 
             return false;
         }
     }
 }
 
+
+
 /*
-*------------------------------------------------------------
-* (Ed25519Verifier.cs)
-* See License.txt for licensing information.
-*-----------------------------------------------------------
-*/
+ *------------------------------------------------------------
+ * (Ed25519Verifier.cs)
+ * See License.txt for licensing information.
+ *-----------------------------------------------------------
+ */
