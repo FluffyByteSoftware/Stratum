@@ -33,7 +33,8 @@ public sealed class DiskManager
     /// The process-wide DiskManager instance. Throws if accessed before <see cref="Initialize"/>.
     /// </summary>
     public static DiskManager Instance =>
-        _instance ?? throw new InvalidOperationException("DiskManager not initialized.");
+        _instance ?? throw new InvalidOperationException(
+            "DiskManager not initialized.");
 
     /// <summary>
     /// True if <see cref="Initialize"/> has been called successfully and the manager is ready for use.
@@ -58,13 +59,21 @@ public sealed class DiskManager
     private readonly SemaphoreSlim _flushSignal = new(0, 1);
 
     /// <summary>
+    /// The absolute root path against which all relative paths passed to read, write, and delete
+    /// methods are resolved. Set at <see cref="Initialize"/> and immutable thereafter.
+    /// </summary>
+    public string RootPath => _rootPath;
+
+    /// <summary>
     /// Initializes the process-wide DiskManager. Subsequent calls are silently ignored.
     /// </summary>
     /// <param name="rootPath">The root directory all relative paths are resolved against. Created if missing.</param>
     /// <param name="logFileTemplate">A path template relative to <paramref name="rootPath"/> containing the
     /// <c>{date}</c> token, which is substituted with today's UTC date in <c>yyyy-MM-dd</c> format. The active
     /// log file rolls over automatically at UTC midnight.</param>
-    public static void Initialize(string rootPath, string logFileTemplate = "logs/server_{date}.log")
+    public static void Initialize(
+        string rootPath,
+        string logFileTemplate = "logs/server_{date}.log")
     {
         if (_initialized) return;
         _instance = new DiskManager(rootPath, logFileTemplate);
@@ -74,7 +83,9 @@ public sealed class DiskManager
     private DiskManager(string rootPath, string logFileTemplate)
     {
         if (!logFileTemplate.Contains(DateToken))
-            throw new ArgumentException($"Log file template must contain '{DateToken}'.", nameof(logFileTemplate));
+            throw new ArgumentException(
+                $"Log file template must contain '{DateToken}'.",
+                nameof(logFileTemplate));
 
         _rootPath = Path.GetFullPath(rootPath);
         _logFileTemplate = logFileTemplate;
@@ -151,6 +162,52 @@ public sealed class DiskManager
     }
 
     /// <summary>
+    /// Returns <see langword="true"/> if the path resolves to either a pending cache entry or an
+    /// existing file on disk. Reflects the same view of the world as <see cref="ReadBinFile"/>.
+    /// </summary>
+    /// <param name="relativePath">The path relative to the configured root.</param>
+    public bool FileExists(string relativePath)
+    {
+        lock (_cacheLock)
+        {
+            if (_cache.ContainsKey(relativePath))
+                return true;
+        }
+
+        var fullPath = Path.Combine(_rootPath, relativePath);
+        return File.Exists(fullPath);
+    }
+
+    /// <summary>
+    /// Removes a file from both the cache (if a write is pending) and from disk (if it exists).
+    /// Returns <see langword="true"/> if either was removed. Subsequent reads of the same path will
+    /// throw <see cref="FileNotFoundException"/> unless the file is rewritten.
+    /// </summary>
+    /// <param name="relativePath">The path relative to the configured root.</param>
+    public bool DeleteFile(string relativePath)
+    {
+        bool removedFromCache;
+        lock (_cacheLock)
+        {
+            removedFromCache = _cache.Remove(
+                relativePath,
+                out var existing);
+            if (removedFromCache)
+                _cacheBytes -= existing.Data.LongLength;
+        }
+
+        var fullPath = Path.Combine(_rootPath, relativePath);
+        var removedFromDisk = false;
+        if (File.Exists(fullPath))
+        {
+            File.Delete(fullPath);
+            removedFromDisk = true;
+        }
+
+        return removedFromCache || removedFromDisk;
+    }
+
+    /// <summary>
     /// Appends a formatted log line to the in-memory log buffer. Called by <c>Scribe</c> for each
     /// processed message. The buffer is flushed to the active dated log file on the same flush cadence
     /// as the main cache.
@@ -162,6 +219,16 @@ public sealed class DiskManager
         {
             _logBuffer.AppendLine(line);
         }
+    }
+
+    /// <summary>
+    /// Forces an immediate flush of the cache and log buffer to disk, bypassing the timer cadence.
+    /// Safe to call concurrently with the background flush loop; entries are snapshotted and cleared
+    /// under lock, so simultaneous flushes do not double-write.
+    /// </summary>
+    public Task FlushAsync()
+    {
+        return Task.Run(FlushOnce);
     }
 
     /// <summary>
@@ -198,13 +265,17 @@ public sealed class DiskManager
         {
             try
             {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                using var timeoutCts =
+                    CancellationTokenSource.CreateLinkedTokenSource(token);
                 timeoutCts.CancelAfter(FlushIntervalMs);
                 try
                 {
-                    await _flushSignal.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                    await _flushSignal
+                        .WaitAsync(timeoutCts.Token)
+                        .ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                catch (OperationCanceledException)
+                    when (!token.IsCancellationRequested)
                 {
                     // Timer-driven flush; not a real cancellation.
                 }
@@ -242,7 +313,9 @@ public sealed class DiskManager
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[DiskManager] Flush failed for '{toWrite[i].Path}': {ex.Message}");
+                Console.Error.WriteLine(
+                    $"[DiskManager] Flush failed for "
+                        + $"'{toWrite[i].Path}': {ex.Message}");
             }
         }
     }
@@ -260,11 +333,16 @@ public sealed class DiskManager
         RollLogIfNeeded();
         try
         {
-            File.AppendAllText(_currentLogPath, toWrite, new UTF8Encoding(false));
+            File.AppendAllText(
+                _currentLogPath,
+                toWrite,
+                new UTF8Encoding(false));
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[DiskManager] Log append failed for '{_currentLogPath}': {ex.Message}");
+            Console.Error.WriteLine(
+                $"[DiskManager] Log append failed for "
+                    + $"'{_currentLogPath}': {ex.Message}");
         }
     }
 
@@ -298,7 +376,11 @@ public sealed class DiskManager
         EnsureDirectoryFor(fullPath);
 
         var tmpPath = fullPath + ".tmp";
-        using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var fs = new FileStream(
+            tmpPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None))
         {
             fs.Write(entry.Data, 0, entry.Data.Length);
             fs.Flush(true);
