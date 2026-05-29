@@ -16,7 +16,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Dispatch\" />
     <Folder Include="Tcp\" />
     <Folder Include="Udp\" />
   </ItemGroup>

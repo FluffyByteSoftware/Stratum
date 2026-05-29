@@ -50,7 +50,7 @@ namespace Stratum.Shared.Networking
             /// <summary>
             /// Packet Id for receiving a pong request.
             /// </summary>
-            public const uint POng              = 0x01_00_00_02;
+            public const uint Pong              = 0x01_00_00_02;
         }
     }
 }
