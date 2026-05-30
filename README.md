@@ -83,7 +83,7 @@ ZoneManager. The client only ever talks to the ConnectionManager.
 
 | Project | Target | Role |
 | --- | --- | --- |
-| `Stratum.Driver` | .NET 10 | Server driver / host entry point |
+| `Stratum.Driver` | .NET 10 | Main driver; launches and supervises the server processes |
 | `Stratum.SystemTools` | .NET 10 | Logging, disk I/O, clock, security, account store |
 | `Stratum.Shared` | .NET Standard 2.1 | Client/server contract surface: packets, channels, IDs |
 | `Stratum.Networking` | .NET 10 | Server-side networking: dispatcher, TCP host, UDP host |
