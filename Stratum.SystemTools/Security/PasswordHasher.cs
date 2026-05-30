@@ -167,6 +167,9 @@ public static class PasswordHasher
         if (!TryBase64NoPadDecode(parts[4], out salt)) return false;
         if (!TryBase64NoPadDecode(parts[5], out hash)) return false;
 
+        if (salt == null || hash == null || salt.Length < 8 
+            || hash.Length < 4) return false;
+
         return true;
     }
 

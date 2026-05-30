@@ -37,6 +37,7 @@ public sealed class TcpHost
     private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(5);
 
     private readonly int _port;
+    private readonly IPAddress _bindAddress;
     private readonly PacketDispatcher<TcpConnection> _dispatcher;
     private readonly X509Certificate2? _certificate;
     private readonly ConcurrentDictionary<long, Task> _handlers = new();
@@ -62,6 +63,7 @@ public sealed class TcpHost
     /// <exception cref="InvalidOperationException"><paramref name="dispatcher"/> is not 
     /// frozen.</exception>
     public TcpHost(
+        IPAddress bindAddress,
         int port,
         PacketDispatcher<TcpConnection> dispatcher,
         X509Certificate2? certificate = null)
@@ -76,6 +78,7 @@ public sealed class TcpHost
             throw new InvalidOperationException(
                 "Dispatcher must be frozen before constructing the host.");
 
+        _bindAddress = bindAddress;
         _port = port;
         _dispatcher = dispatcher;
         _certificate = certificate;
@@ -92,14 +95,14 @@ public sealed class TcpHost
         if (_acceptLoop is not null)
             throw new InvalidOperationException("Host is already started.");
 
-        _listener = new TcpListener(IPAddress.Parse("10.0.0.84"), _port);
+        _listener = new TcpListener(_bindAddress, _port);
         _listener.Start();
         _acceptLoop = AcceptLoopAsync();
 
         string tls = _certificate is not null ? " (TLS)" : "";
         
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
-            $"TCP Host listening on port {_port}{tls}."));
+            $"Tcp Host listening on {_bindAddress}, port: {_port}{tls}."));
     }
 
     /// <summary>
@@ -442,8 +445,8 @@ public sealed class TcpHost
             case DispatchOutcome.HandlerException:
                 Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
                     $"Handler for 0x{result.TypeId:X8} threw " +
-                    $"on connection {conn.Id}: {result.Exception}", 
-                    result.Exception ?? null));
+                    $"on connection {conn.Id}: {result.Exception?.Message}",
+                    result.Exception));
                 conn.RequestDisconnect(SecureDisconnectReason.InternalError);
                 break;
         }
