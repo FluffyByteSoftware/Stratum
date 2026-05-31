@@ -23,7 +23,7 @@ namespace Stratum.SystemTools.Security;
 /// </summary>
 public static class CertificateProvider
 {
-    private const string SubjectName = "CN-Stratum";
+    private const string SubjectName = "CN=Stratum";
     private const string PfxRelativePath = "certs/server.pfx";
     private const string CerRelativePath = "certs/server.cer";
     private static readonly TimeSpan Lifetime = TimeSpan.FromDays(365);

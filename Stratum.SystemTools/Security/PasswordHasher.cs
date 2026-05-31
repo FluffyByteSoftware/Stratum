@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Generators;
+using Stratum.SystemTools.Logger;
 
 namespace Stratum.SystemTools.Security;
 
@@ -65,6 +66,8 @@ public static class PasswordHasher
             out byte[]? salt,
             out byte[]? expected))
         {
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
+                "Stored password hash is malformed; verification rejected."));
             return false;
         }
 
@@ -167,7 +170,7 @@ public static class PasswordHasher
         if (!TryBase64NoPadDecode(parts[4], out salt)) return false;
         if (!TryBase64NoPadDecode(parts[5], out hash)) return false;
 
-        if (salt == null || hash == null || salt.Length < 8 
+        if (salt == null || hash == null || salt.Length < 8
             || hash.Length < 4) return false;
 
         return true;

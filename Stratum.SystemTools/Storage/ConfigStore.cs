@@ -76,7 +76,7 @@ public static class ConfigStore
             }            
             catch(Exception ex)
             {
-                Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
+                Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
                     $"Error in LoadOrCreate JSON config file.", ex));
                 throw;
             }

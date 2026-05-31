@@ -438,7 +438,7 @@ public sealed class TcpHost
                 Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
                     $"Invalid packet 0x{result.TypeId:X8} " +
                     $"from {conn.RemoteEndPoint}: {result.Exception?.Message}", 
-                    result.Exception ?? null));
+                    result.Exception));
 
                 conn.RequestDisconnect(SecureDisconnectReason.MalformedPacket);
                 break;
