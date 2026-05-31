@@ -6,8 +6,9 @@
  *-------------------------------------------------------------
  */
 using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using Newtonsoft.Json;
 using Stratum.SystemTools.Logger;
 using Stratum.SystemTools.Storage;
 
@@ -16,8 +17,9 @@ namespace Stratum.SystemTools.Accounts;
 /// <summary>
 /// Manages account records with thread-safe in-memory storage and JSON file-based persistence.
 /// </summary>
-/// <remarks>This class uses a singleton pattern and must be initialized via <see cref="Initialize"/> before
-/// accessing the <see cref="Instance"/>. Account IDs must be 3-24 characters long and contain only lowercase letters.
+/// <remarks>This class uses a singleton pattern and must be initialized via 
+/// <see cref="Initialize"/> before accessing the <see cref="Instance"/>. Account IDs must 
+/// be 3-24 characters long and contain only lowercase letters.
 /// All operations are thread-safe using concurrent collections.</remarks>
 public sealed partial class AccountStore
 {
@@ -49,12 +51,11 @@ public sealed partial class AccountStore
     private readonly ConcurrentDictionary<string, AccountRecord> _records
         = new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly JsonSerializerSettings _jsonSettings = new()
+    private readonly JsonSerializerOptions _jsonOptions = new()
     {
-        DateTimeZoneHandling = DateTimeZoneHandling.Utc,
-        DateFormatHandling = DateFormatHandling.IsoDateFormat,
-        Formatting = Formatting.Indented,
-        NullValueHandling = NullValueHandling.Include
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
 
     /// <summary>
@@ -236,9 +237,9 @@ public sealed partial class AccountStore
             try
             {
                 var json = disk.ReadTextFile(relativePath);
-                record = JsonConvert.DeserializeObject<AccountRecord>(
+                record = JsonSerializer.Deserialize<AccountRecord>(
                     json,
-                    _jsonSettings);
+                    _jsonOptions);
             }
             catch (Exception ex)
             {
@@ -276,7 +277,7 @@ public sealed partial class AccountStore
 
     private void PersistRecord(AccountRecord record)
     {
-        var json = JsonConvert.SerializeObject(record, _jsonSettings);
+        var json = JsonSerializer.Serialize(record, _jsonOptions);
         var relativePath = BuildRelativePath(record.Id);
         DiskManager.Instance.WriteTextFile(relativePath, json);
     }
@@ -330,7 +331,6 @@ public sealed partial class AccountStore
             && accountId.Length <= MaxIdLength
             && IdCharsetPattern().IsMatch(accountId);
 }
-
 
 /*
  *------------------------------------------------------------

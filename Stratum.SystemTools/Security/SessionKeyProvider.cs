@@ -11,6 +11,13 @@ using System.Security.Cryptography;
 
 namespace Stratum.SystemTools.Security;
 
+/// <summary>
+/// Provides persistent session cryptographic keys with automatic creation and 
+/// storage.
+/// </summary>
+/// <remarks>Keys are stored at a fixed location on disk and reused across sessions. 
+/// If no valid key exists, a new cryptographically secure key is automatically 
+/// generated.</remarks>
 public static class SessionKeyProvider
 {
     private const string KeyRelativePath = "keys/session_token.key";
@@ -47,8 +54,6 @@ public static class SessionKeyProvider
         return fresh;
     }
 }
-
-
 
 /*
  *------------------------------------------------------------
