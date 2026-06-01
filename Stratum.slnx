@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="../bu/Connection/Connection.csproj" />
+  <Project Path="../bu/LoginServer/LoginServer.csproj" />
+  <Project Path="../bu/Networking/Networking.csproj" />
+  <Project Path="../bu/Shared/Shared.csproj" />
+  <Project Path="../bu/SystemTools/SystemTools.csproj" />
+  <Project Path="AdminTools/AdminTools.csproj" Id="3478271c-7dd6-431c-965a-7a4d8d09ac64" />
+</Solution>

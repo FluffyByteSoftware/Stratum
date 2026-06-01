@@ -1,8 +1,0 @@
-<Solution>
-  <Project Path="Stratum.Connection/Stratum.Connection.csproj" Id="c70fa236-35e8-4d58-b5ca-d130d7b73544" />
-  <Project Path="Stratum.Driver/Stratum.Driver.csproj" />
-  <Project Path="Stratum.LoginServer/Stratum.LoginServer.csproj" Id="10cd84a2-df05-43a3-821e-77a3a8912e66" />
-  <Project Path="Stratum.Networking/Stratum.Networking.csproj" Id="1315de7e-52e7-49ad-8c58-8f2c7f3e7642" />
-  <Project Path="Stratum.Shared/Stratum.Shared.csproj" Id="24daea1a-171a-4a64-b73b-c14b069cb079" />
-  <Project Path="Stratum.SystemTools/Stratum.SystemTools.csproj" Id="ffeaa353-d23a-486d-b42c-f55bd41506b0" />
-</Solution>
