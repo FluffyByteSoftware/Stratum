@@ -1,0 +1,3 @@
+Please also see Philosophy.txt
+
+If you use this software please try to release your own configurations as publicly available.  That's all I ask.  Otherwise this is the MIT License.
