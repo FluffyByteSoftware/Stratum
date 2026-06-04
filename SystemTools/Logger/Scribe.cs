@@ -94,7 +94,7 @@ public static class Scribe
         WriteToConsole(msg.Severity, line);
 
         if (DiskManager.IsRunning)
-            DiskManager.Instance.EnqueueLogMessage(line);
+            DiskManager.Instance.Log(LogFile.Server, line);   // was EnqueueLogMessage(line)
     }
 
     private static string Format(in ScribeMessage msg)

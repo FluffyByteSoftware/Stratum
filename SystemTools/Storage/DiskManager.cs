@@ -13,12 +13,12 @@ namespace SystemTools.Storage;
 /// <summary>
 /// The single point of contact between the game engine and the filesystem. Buffers writes in memory and
 /// flushes to disk on a periodic timer or when the cache exceeds its size budget. Reads check the cache
-/// first for unflushed writes, falling back to disk on a miss. Also receives formatted log lines from
-/// <c>Scribe</c> and accumulates them in a separate buffer for daily-rolling log files.
+/// first for unflushed writes, falling back to disk on a miss. Also receives formatted log lines via
+/// <see cref="Log"/> and accumulates them in per-<see cref="LogFile"/> buffers for daily-rolling log files.
 /// </summary>
 /// <remarks>Accessed globally via <see cref="Instance"/> after <see cref="Initialize"/> has been called.
 /// All disk writes are atomic (write to temp file, fsync, rename). On shutdown, callers should invoke
-/// <see cref="ShutdownAsync"/> from a <c>finally</c> block to drain the cache and log buffer before
+/// <see cref="ShutdownAsync"/> from a <c>finally</c> block to drain the cache and log buffers before
 /// process exit.</remarks>
 public sealed class DiskManager
 {
@@ -43,16 +43,13 @@ public sealed class DiskManager
     public static bool IsRunning => _initialized && _instance is not null;
 
     private readonly string _rootPath;
-    private readonly string _logFileTemplate;
 
     private readonly Dictionary<string, DiskEntry> _cache = [];
     private readonly Lock _cacheLock = new();
     private long _cacheBytes;
 
-    private readonly StringBuilder _logBuffer = new();
+    private readonly LogSink[] _logSinks;
     private readonly Lock _logLock = new();
-    private DateTime _currentLogDateUtc;
-    private string _currentLogPath;
 
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _flushTask;
@@ -65,38 +62,41 @@ public sealed class DiskManager
     public string RootPath => _rootPath;
 
     /// <summary>
-    /// Initializes the process-wide DiskManager. Subsequent calls are silently ignored.
+    /// Initializes the process-wide DiskManager. Subsequent calls are silently ignored. Log
+    /// destinations are fixed per <see cref="LogFile"/>; each rolls over automatically at UTC midnight.
     /// </summary>
     /// <param name="rootPath">The root directory all relative paths are resolved against. Created if missing.</param>
-    /// <param name="logFileTemplate">A path template relative to <paramref name="rootPath"/> containing the
-    /// <c>{date}</c> token, which is substituted with today's UTC date in <c>yyyy-MM-dd</c> format. The active
-    /// log file rolls over automatically at UTC midnight.</param>
-    public static void Initialize(
-        string rootPath,
-        string logFileTemplate = "logs/server_{date}.log")
+    public static void Initialize(string rootPath)
     {
         if (_initialized) return;
-        _instance = new DiskManager(rootPath, logFileTemplate);
+        _instance = new DiskManager(rootPath);
         _initialized = true;
     }
 
-    private DiskManager(string rootPath, string logFileTemplate)
+    private DiskManager(string rootPath)
     {
-        if (!logFileTemplate.Contains(DateToken))
-            throw new ArgumentException(
-                $"Log file template must contain '{DateToken}'.",
-                nameof(logFileTemplate));
-
         _rootPath = Path.GetFullPath(rootPath);
-        _logFileTemplate = logFileTemplate;
         Directory.CreateDirectory(_rootPath);
 
-        _currentLogDateUtc = DateTime.UtcNow.Date;
-        _currentLogPath = ResolveLogPath(_currentLogDateUtc);
-        EnsureDirectoryFor(_currentLogPath);
+        var today = DateTime.UtcNow.Date;
+        _logSinks = new LogSink[LogTemplates.Length];
+        for (int i = 0; i < LogTemplates.Length; i++)
+        {
+            var sink = new LogSink(LogTemplates[i]);
+            sink.Roll(today, _rootPath);
+            EnsureDirectoryFor(sink.CurrentPath);
+            _logSinks[i] = sink;
+        }
 
         _flushTask = Task.Run(FlushLoop);
     }
+
+    private static readonly string[] LogTemplates =
+    [
+        "logs/server_{date}.log",      // LogFile.Server
+        "logs/admin_{date}.log",       // LogFile.Admin
+        "logs/simulation_{date}.log"   // LogFile.Simulation
+    ];
 
     /// <summary>
     /// Writes a UTF-8 encoded text file to the cache. The actual disk write occurs on the next flush
@@ -208,21 +208,22 @@ public sealed class DiskManager
     }
 
     /// <summary>
-    /// Appends a formatted log line to the in-memory log buffer. Called by <c>Scribe</c> for each
-    /// processed message. The buffer is flushed to the active dated log file on the same flush cadence
-    /// as the main cache.
+    /// Appends a formatted log line to the in-memory buffer for the given <paramref name="target"/>.
+    /// Called by <c>Scribe</c> (for <see cref="LogFile.Server"/>) and by audit/simulation callers. The
+    /// buffer is flushed to the active dated log file on the same flush cadence as the main cache.
     /// </summary>
+    /// <param name="target">The destination log file.</param>
     /// <param name="line">The formatted log line to append, without a trailing newline.</param>
-    public void EnqueueLogMessage(string line)
+    public void Log(LogFile target, string line)
     {
         lock (_logLock)
         {
-            _logBuffer.AppendLine(line);
+            _logSinks[(int)target].Buffer.AppendLine(line);
         }
     }
 
     /// <summary>
-    /// Forces an immediate flush of the cache and log buffer to disk, bypassing the timer cadence.
+    /// Forces an immediate flush of the cache and log buffers to disk, bypassing the timer cadence.
     /// Safe to call concurrently with the background flush loop; entries are snapshotted and cleared
     /// under lock, so simultaneous flushes do not double-write.
     /// </summary>
@@ -232,9 +233,9 @@ public sealed class DiskManager
     }
 
     /// <summary>
-    /// Flushes all pending writes and the log buffer to disk, then stops the flush loop. Idempotent on
+    /// Flushes all pending writes and the log buffers to disk, then stops the flush loop. Idempotent on
     /// subsequent calls. Should be invoked from a <c>finally</c> block around the server lifetime, after
-    /// <c>Scribe.ShutdownAsync</c> so any in-flight log messages land in the log buffer first.
+    /// <c>Scribe.ShutdownAsync</c> so any in-flight log messages land in the buffers first.
     /// </summary>
     public async Task ShutdownAsync()
     {
@@ -290,7 +291,7 @@ public sealed class DiskManager
     private void FlushOnce()
     {
         FlushCache();
-        FlushLogBuffer();
+        FlushLogBuffers();
     }
 
     private void FlushCache()
@@ -320,47 +321,43 @@ public sealed class DiskManager
         }
     }
 
-    private void FlushLogBuffer()
-    {
-        string toWrite;
-        lock (_logLock)
-        {
-            if (_logBuffer.Length == 0) return;
-            toWrite = _logBuffer.ToString();
-            _logBuffer.Clear();
-        }
-
-        RollLogIfNeeded();
-        try
-        {
-            File.AppendAllText(
-                _currentLogPath,
-                toWrite,
-                new UTF8Encoding(false));
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(
-                $"[DiskManager] Log append failed for "
-                    + $"'{_currentLogPath}': {ex.Message}");
-        }
-    }
-
-    private void RollLogIfNeeded()
+    private void FlushLogBuffers()
     {
         var today = DateTime.UtcNow.Date;
-        if (today == _currentLogDateUtc) return;
+        for (int i = 0; i < _logSinks.Length; i++)
+        {
+            string toWrite;
+            string path;
+            lock (_logLock)
+            {
+                var sink = _logSinks[i];
+                if (sink.Buffer.Length == 0) continue;
 
-        _currentLogDateUtc = today;
-        _currentLogPath = ResolveLogPath(today);
-        EnsureDirectoryFor(_currentLogPath);
-    }
+                if (today != sink.CurrentDateUtc)
+                {
+                    sink.Roll(today, _rootPath);
+                    EnsureDirectoryFor(sink.CurrentPath);
+                }
 
-    private string ResolveLogPath(DateTime utcDate)
-    {
-        var dateStr = utcDate.ToString("yyyy-MM-dd");
-        var relative = _logFileTemplate.Replace(DateToken, dateStr);
-        return Path.Combine(_rootPath, relative);
+                toWrite = sink.Buffer.ToString();
+                sink.Buffer.Clear();
+                path = sink.CurrentPath;
+            }
+
+            try
+            {
+                File.AppendAllText(
+                    path,
+                    toWrite,
+                    new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[DiskManager] Log append failed for "
+                        + $"'{path}': {ex.Message}");
+            }
+        }
     }
 
     private static void EnsureDirectoryFor(string fullPath)
@@ -390,6 +387,22 @@ public sealed class DiskManager
             File.Replace(tmpPath, fullPath, null);
         else
             File.Move(tmpPath, fullPath);
+    }
+
+    private sealed class LogSink(string template)
+    {
+
+        public StringBuilder Buffer { get; } = new();
+        public DateTime CurrentDateUtc { get; private set; }
+        public string CurrentPath { get; private set; } = "";
+
+        public void Roll(DateTime utcDate, string rootPath)
+        {
+            CurrentDateUtc = utcDate;
+            var dateStr = utcDate.ToString("yyyy-MM-dd");
+            var relative = template.Replace(DateToken, dateStr);
+            CurrentPath = Path.Combine(rootPath, relative);
+        }
     }
 }
 

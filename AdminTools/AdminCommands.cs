@@ -11,7 +11,7 @@ using SystemTools.Logger;
 using SystemTools.Security;
 using SystemTools.Storage;
 
-namespace AdminTools;
+namespace SystemTools.Accounts.AdminTools;
 
 /// <summary>
 /// Provides administrative commands for managing user accounts, including creating new

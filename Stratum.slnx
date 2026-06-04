@@ -1,6 +1,6 @@
 <Solution>
-  <Project Path="AdminTools/AdminTools.csproj" Id="3478271c-7dd6-431c-965a-7a4d8d09ac64" />
   <Project Path="Connection/Connection.csproj" />
+  <Project Path="Core/Core.csproj" Id="1209b187-d4cb-4ca4-9a7d-e27a619806bc" />
   <Project Path="LoginServer/LoginServer.csproj" />
   <Project Path="Networking/Networking.csproj" />
   <Project Path="Shared/Shared.csproj" />
