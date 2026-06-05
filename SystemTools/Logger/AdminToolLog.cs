@@ -60,7 +60,7 @@ public static class AdminToolLog
     {
         if (!DiskManager.IsRunning) return;
 
-        var stamp = DateTime.Now.ToString("M/d/yyyy - h:mm tt");
+        var stamp = DateTime.UtcNow.ToString("M/d/yyyy - h:mm tt");
         var tag = action switch
         {
             AdminAction.Create => "CREATE",

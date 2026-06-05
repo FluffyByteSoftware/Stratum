@@ -38,7 +38,7 @@ public readonly struct ScribeMessage(
     /// <summary>
     /// The local time at which the message was constructed.
     /// </summary>
-    public DateTime Timestamp { get; } = DateTime.Now;
+    public DateTime Timestamp { get; } = DateTime.UtcNow;
 
     /// <summary>
     /// The severity level of the message.
