@@ -105,7 +105,46 @@ internal static class Program
 
     private static void StartStopServer()
     {
-        Console.WriteLine("Not yet implemented.");
+        if (LoginServerProcess.IsRunning)
+        {
+            Console.WriteLine("LoginServer is running.\n");
+            Console.WriteLine("To stop it gracefully, press Ctrl+C " +
+                "in its own window.");
+            Console.Write("Force-stop instead? Buffered writes may be lost (y/n)? ");
+
+            var answer = Console.ReadLine()?.Trim();
+
+            if(string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
+            {
+                LoginServerProcess.ForceStop();
+                Console.WriteLine("LoginServer force-stopped");
+            }
+            else
+            {
+                Console.WriteLine("Cancelled; LoginServer left running.");
+            }
+
+            return;
+        }
+
+        switch (LoginServerProcess.Start())
+        {
+            case StartResult.Started:
+                Console.WriteLine("LoginServer started in its own window.");
+                break;
+            case StartResult.AlreadyRunning:
+                Console.WriteLine("LoginServer is already running.");
+                break;
+            case StartResult.ExecutableNotFound:
+                Console.WriteLine("Could not find LoginServer.exe in any known location."
+                    + "Build the LoginServer project first.");
+                break;
+            case StartResult.Failed:
+                Console.WriteLine($"Failed to launch LoginServer. See server log for " +
+                    $"details.");
+                break;
+        }
+
     }
 
     private static void CheckResources()

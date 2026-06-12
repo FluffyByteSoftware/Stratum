@@ -14,8 +14,6 @@ using SystemTools.Security;
 using System;
 using System.Buffers.Binary;
 using System.Threading.Tasks;
-using Stratum.Networking.Tcp;
-using Stratum.LoginServer;
 using Stratum.Shared.Networking;
 
 namespace LoginServer;

@@ -13,7 +13,7 @@ using System.Threading;
 using Stratum.Shared.Networking;
 
 
-namespace Stratum.Networking.Tcp;
+namespace Networking.Tcp;
 
 /// <summary>
 /// Represents a TCP connection with support for secure disconnection and 

@@ -20,6 +20,7 @@ public static class Ed25519Verifier
     private const int PublicKeyLength = 32;
     private const int SignatureLength = 64;
 
+    
     /// <summary>
     /// Verifies an Ed25519 signature against a message using the provided public key.
     /// </summary>
@@ -38,6 +39,7 @@ public static class Ed25519Verifier
         try
         {
             var keyParams = new Ed25519PublicKeyParameters(publicKey.ToArray(), 0);
+            
 
             var signer = new Ed25519Signer();
             signer.Init(forSigning: false, keyParams);

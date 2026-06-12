@@ -17,7 +17,6 @@ using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using SystemTools.Logger;
 using Shared.Networking.Packets.LifeCycle;
-using Stratum.Networking.Tcp;
 using Stratum.Shared.Networking;
 
 namespace Networking.Tcp;

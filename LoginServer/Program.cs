@@ -8,7 +8,6 @@
 
 using System;
 using Stratum.Networking.Dispatch;
-using Stratum.Networking.Tcp;
 using SystemTools.Accounts;
 using SystemTools.Config;
 using SystemTools.Logger;
@@ -21,6 +20,10 @@ using Networking.Tcp;
 
 namespace LoginServer;
 
+/// <summary>
+/// The main boot operator for the LoginServer. 
+/// Maintains the Tcp connection with clients.
+/// </summary>
 internal static class Program
 {
     private const string DataRoot = "./data";
@@ -53,7 +56,7 @@ internal static class Program
             var signingKey = SessionKeyProvider.LoadOrCreate();
             SessionTokenIssuer.Initialize(signingKey);
 
-            var lockout = new Stratum.LoginServer.LockoutTracker();
+            var lockout = new LoginServer.LockoutTracker();
             var handlers = new AuthHandler(
                 AccountStore.Instance, lockout, AdvertisedUdpEndpoint);
 

@@ -9,7 +9,7 @@
 using System;
 using System.Collections.Concurrent;
 
-namespace Stratum.LoginServer;
+namespace LoginServer;
 
 /// <summary>
 /// Tracks failed authentication attempts and enforces temporary account 

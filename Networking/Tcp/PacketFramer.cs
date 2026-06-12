@@ -8,7 +8,7 @@
 
 using System.Buffers.Binary;
 
-namespace Stratum.Networking.Tcp;
+namespace Networking.Tcp;
 
 /// <summary>
 /// Provides methods for framing and parsing binary packets with fixed 8-byte headers.
