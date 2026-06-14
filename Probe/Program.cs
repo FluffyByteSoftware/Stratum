@@ -6,6 +6,7 @@
  *-------------------------------------------------------------
  */
 
+using LiteNetLib;
 using LiteNetLib.Utils;
 using Networking.Tcp;
 using Shared.Networking;
@@ -16,6 +17,7 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
 using SystemTools.Security;
 
 namespace Probe;
@@ -30,6 +32,14 @@ internal static class Program
     // SNI target. With accept-all validation the value only drives the SNI
     // field and never has to match the dev cert's CN.
     private const string TargetHost = "Stratum";
+
+    // Sentinel's UDP endpoint for testing. Host matches the TCP target; port
+    // is Sentinel's listener. The advertised UdpEndpoint from the auth
+    // response carries the same value once its placeholder host is real.
+    private const string SentinelHost = "10.0.0.84";
+    private const int SentinelPort = 9998;
+
+    private static readonly TimeSpan UdpAuthTimeout = TimeSpan.FromSeconds(3);
 
     private static async Task Main()
     {
@@ -74,7 +84,17 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine("[2] Key auth with issued seed ...");
 
-            await KeyAuthAsync(accountId, seed).ConfigureAwait(false);
+            if (await KeyAuthAsync(accountId, seed).ConfigureAwait(false)
+                    is not { } keyResponse)
+                return;
+
+            // Leg 3 - UDP auth against Sentinel using the token leg 2 issued.
+            // Proves the TCP-minted token validates over UDP and the ack
+            // round-trips with correct big-endian framing.
+            Console.WriteLine();
+            Console.WriteLine("[3] UDP auth with leg-2 token ...");
+
+            UdpAuth(keyResponse.SessionToken);
         }
         catch (Exception ex)
         {
@@ -93,7 +113,8 @@ internal static class Program
         return InterpretResponse(typeId, payload);
     }
 
-    private static async Task KeyAuthAsync(string accountId, byte[] seed)
+    private static async Task<AuthResponsePacket?> KeyAuthAsync(
+        string accountId, byte[] seed)
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         byte[] signature = SignTimestamp(seed, now);
@@ -105,10 +126,82 @@ internal static class Program
         var (typeId, payload) =
             await SendAndReceiveAsync(packet).ConfigureAwait(false);
 
-        if (InterpretResponse(typeId, payload) is { } response)
+        AuthResponsePacket? response = InterpretResponse(typeId, payload);
+
+        if (response is { } ok)
             Console.WriteLine(
-                $"    OK  token={Truncate(response.SessionToken)}  "
-                + $"udp={response.UdpEndpoint}");
+                $"    OK  token={Truncate(ok.SessionToken)}  "
+                + $"udp={ok.UdpEndpoint}");
+
+        return response;
+    }
+
+    // Leg 3: stand up a LiteNetLib client, present the session token as the
+    // connection-request data, and wait for Sentinel's ack. A rejected token
+    // never establishes a peer, so connection failure or timeout is the fail
+    // path; only a received Authenticated ack passes.
+    private static void UdpAuth(string token)
+    {
+        var listener = new EventBasedNetListener();
+        var client = new NetManager(listener);
+
+        UdpAuthResult result = UdpAuthResult.None;
+        bool acked = false;
+        bool disconnected = false;
+
+        listener.PeerConnectedEvent += peer =>
+            Console.WriteLine("    Connected; awaiting ack.");
+
+        listener.PeerDisconnectedEvent += (peer, info) =>
+        {
+            disconnected = true;
+            Console.WriteLine($"    Disconnected: {info.Reason}.");
+        };
+
+        listener.NetworkReceiveEvent += (peer, reader, channel, method) =>
+        {
+            byte[] data = reader.GetRemainingBytes();
+            reader.Recycle();
+
+            if (data.Length < sizeof(uint) + 1)
+            {
+                Console.WriteLine(
+                    $"    Ack too short: {data.Length} bytes.");
+                return;
+            }
+
+            uint typeId = BinaryPrimitives.ReadUInt32BigEndian(data);
+
+            if (typeId != PacketIds.Auth.UdpAuthAck)
+            {
+                Console.WriteLine(
+                    $"    Unexpected ack type 0x{typeId:X8}.");
+                return;
+            }
+
+            result = (UdpAuthResult)data[sizeof(uint)];
+            acked = true;
+        };
+
+        client.Start();
+        client.Connect(SentinelHost, SentinelPort, token);
+
+        var deadline = DateTime.UtcNow + UdpAuthTimeout;
+
+        while (!acked && !disconnected && DateTime.UtcNow < deadline)
+        {
+            client.PollEvents();
+            Thread.Sleep(15);
+        }
+
+        client.Stop();
+
+        if (acked && result == UdpAuthResult.Authenticated)
+            Console.WriteLine("    OK  UDP session authenticated.");
+        else if (acked)
+            Console.WriteLine($"    FAIL  ack result was {result}.");
+        else
+            Console.WriteLine("    FAIL  no ack (rejected or timed out).");
     }
 
     // Sync helper: stackalloc is illegal in an async method, and the signed
@@ -215,8 +308,6 @@ internal static class Program
     private static string Truncate(string value) =>
         value.Length <= 12 ? value : value[..12] + "...";
 }
-
-
 
 /*
  *------------------------------------------------------------

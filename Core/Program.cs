@@ -14,7 +14,9 @@ namespace Core;
 
 internal static class Program
 {
-    private const string DataRoot = "./data";
+    private const string DataRoot = @"E:\Stratum\data";
+
+    private static bool ServerRunning => LoginServerProcess.IsRunning;
 
     private static async Task<int> Main()
     {
@@ -78,6 +80,8 @@ internal static class Program
                 case "0":
                 case "quit":
                 case "exit":
+                    if (LoginServerProcess.IsRunning)
+                        LoginServerProcess.ForceStop();
                     return;
                 default:
                     Console.WriteLine($"Unknown option: '{choice}'.");
@@ -157,7 +161,15 @@ internal static class Program
         Console.WriteLine("Welcome to Stratum Core");
         Console.WriteLine("Please select an option.");
         Console.WriteLine();
-        Console.WriteLine("  1) Start/Stop Stratum Server");
+        if (ServerRunning)
+        {
+            Console.WriteLine("  1) Stop Stratum Server");
+        }
+        else
+        {
+            Console.WriteLine("  1) Stop Stratum Server");
+        }
+
         Console.WriteLine("  2) Check Resources");
         Console.WriteLine("  3) Create Account");
         Console.WriteLine("  4) Reset Account");

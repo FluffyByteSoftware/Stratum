@@ -6,7 +6,7 @@
  *-------------------------------------------------------------
  */
 
-namespace Stratum.Shared.Networking
+namespace Shared.Networking
 {
     /// <summary>
     /// Defines packet identifier constants for network protocol messages, 
@@ -36,6 +36,11 @@ namespace Stratum.Shared.Networking
             /// Packet Id for disconnect operation
             /// </summary>
             public const uint Disconnect        = 0x00_00_00_04;
+
+            /// <summary>
+            /// Packet Id for Udp authentication acknowledgement
+            /// </summary>
+            public const uint UdpAuthAck        = 0x00_00_00_05;
         }
 
         /// <summary>

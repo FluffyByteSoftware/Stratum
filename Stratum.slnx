@@ -1,9 +1,9 @@
 <Solution>
-  <Project Path="Connection/Connection.csproj" />
   <Project Path="Core/Core.csproj" Id="1209b187-d4cb-4ca4-9a7d-e27a619806bc" />
   <Project Path="LoginServer/LoginServer.csproj" />
   <Project Path="Networking/Networking.csproj" />
   <Project Path="Probe/Probe.csproj" Id="8bde782b-3d5f-4200-8ded-db8440c0fbb9" />
+  <Project Path="Sentinel/Sentinel.csproj" Id="3fefd518-b832-4dec-be87-a0cae6efcbd7" />
   <Project Path="Shared/Shared.csproj" />
   <Project Path="SystemTools/SystemTools.csproj" />
 </Solution>

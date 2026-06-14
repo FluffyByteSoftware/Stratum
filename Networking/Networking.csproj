@@ -11,13 +11,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Connection\Connection.csproj" />
     <ProjectReference Include="..\Shared\Shared.csproj" />
     <ProjectReference Include="..\SystemTools\SystemTools.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="Udp\" />
   </ItemGroup>
 
 </Project>

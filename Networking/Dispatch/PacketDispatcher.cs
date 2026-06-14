@@ -11,8 +11,9 @@ using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using LiteNetLib.Utils;
+using Stratum.Networking.Dispatch;
 
-namespace Stratum.Networking.Dispatch;
+namespace Networking.Dispatch;
 
 /// <summary>
 /// Represents a method that deserializes a packet from a data reader.

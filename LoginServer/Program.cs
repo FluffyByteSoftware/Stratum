@@ -7,7 +7,7 @@
  */
 
 using System;
-using Stratum.Networking.Dispatch;
+using Networking.Dispatch;
 using SystemTools.Accounts;
 using SystemTools.Config;
 using SystemTools.Logger;
@@ -26,10 +26,10 @@ namespace LoginServer;
 /// </summary>
 internal static class Program
 {
-    private const string DataRoot = "./data";
-    private const string CertificatePath = "./data/certs/server.pfx";
-    private const string ServerConfigPath = "config/server.json";
-    private const string NetworkConfigPath = "config/network.json";
+    private const string DataRoot =             @"E:\Stratum\data";
+    private const string CertificatePath =      @"E:\Stratum\data\certs\server.pfx";
+    private const string ServerConfigPath =     @"E:\Stratum\config\server.json";
+    private const string NetworkConfigPath =    @"E:\Stratum\config\network.json";
 
     // PLACEHOLDER UNTIL UDP IS WRITTEN
     private const string AdvertisedUdpEndpoint = "10.0.0.84:9998";
