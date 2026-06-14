@@ -1,117 +1,123 @@
 # Stratum
 
-A custom C# multiplayer RPG game server for a persistent, shared voxel world.
-Targets ~25 concurrent players. Built as both a real project and a deliberate
-learning exercise.
+A multiplayer RPG game server I'm writing in C#. Persistent shared voxel
+world, somewhere around 25 players. It's a real project I intend to ship to
+real people, but I'll be honest about the other half of it: this is also me
+learning how all of this actually works — networking, crypto, process
+architecture, simulation — by building it myself instead of grabbing a
+framework that hides it from me.
 
-## Stack
+That means some of the code in here is the second or third version of an
+idea, because the first version taught me why it was wrong. I'm okay with
+that. That's kind of the point. There's more on how I think about this in
+[Philosophy.txt](Philosophy.txt).
 
-- **.NET 10** — server processes
-- **.NET Standard 2.1** — shared library (compiles on .NET 10 *and* Unity
-  Mono/IL2CPP)
-- **Unity 6** — client
-- **LiteNetLib** — UDP networking
-- **BouncyCastle** — Argon2id password hashing, Ed25519 primitives
+## The stack
 
-## Architecture
+- **.NET 10** for the server processes
+- **.NET Standard 2.1** for the shared library — it has to compile on .NET 10
+  *and* under Unity's Mono/IL2CPP, and netstandard2.1 is the overlap
+- **Unity 6** for the client (separate repo)
+- **LiteNetLib** for UDP, and I also use its `NetDataWriter`/`NetDataReader`
+  as general buffer tools
+- **BouncyCastle** for Argon2id password hashing and Ed25519 keys
+- **Newtonsoft.Json** for anything the client might ever read. System.Text.Json
+  is allowed server-side only — IL2CPP strips STJ's reflection converters and
+  I learned that the annoying way.
 
-A star topology. The client only ever talks to the ConnectionManager; zones never
-talk to each other directly — all routing flows through the ZoneManager. Each
-server process is its own executable.
+## How the server is shaped
 
-- **LoginServer** — TLS/TCP auth only. Two auth paths (Ed25519 key, password
-  fallback); issues short-lived session tokens.
-- **ConnectionManager / Sentinel** — TCP + UDP; the sole client-facing in-game
-  process; translates between clients and zones.
-- **ZoneManager** — master clock, cross-zone coordinator, zone lifecycle supervisor.
-- **Zones** — one process per zone, authoritative simulation.
-- **Core** — operator console. The local control surface for running the server
-  and managing accounts; not client-facing.
+It's a star. The client only ever talks to one process, zones never talk to
+each other, and everything routes through the middle. Each box below is its
+own executable:
 
-## Solution layout
+- **LoginServer** — TLS/TCP, auth only. It does one job and then hangs up.
+- **Core** — the operator console. Account management, launching the login
+  server, admin tooling. This is *my* front door, not the player's.
+- **ConnectionManager** — the only in-game process a client talks to. TCP +
+  UDP per client; it translates between clients and zones. (Not built yet.)
+- **ZoneManager** — master clock, cross-zone coordination, zone lifecycle.
+  (Not built yet.)
+- **Zones** — one process per zone, each one authoritative over its own
+  simulation. (Not built yet.)
 
-```
-Stratum.slnx
-├── SystemTools/   .NET 10     — Scribe, AdminToolLog, DiskManager, ConfigStore,
-│                                Heartbeat, CertificateProvider,
-│                                Ed25519Verifier/KeyGenerator, PasswordHasher,
-│                                SessionKeyProvider, SessionTokenIssuer,
-│                                AccountRecord/Store, AccountManager, ConsoleInput
-├── Shared/        .NETStd2.1  — packet defs, channels, IDs, disconnect reasons,
-│                                IPacketWritable
-├── Networking/    .NET 10     — dispatcher, TcpHost, UdpHost
-├── LoginServer/   .NET 10     — auth-only exe (TCP+TLS, no UDP)
-├── Connection/    .NET 10     — ConnectionManager exe (TCP / UDP; not yet built)
-└── Core/          .NET 10     — operator console (server control + account mgmt)
-```
+Why processes instead of threads in one big exe? Isolation, mostly. A zone
+that crashes shouldn't take the login server with it, and forcing everything
+through explicit message passing keeps me from cheating with shared state.
 
-**Placement rule:** if the Unity client wouldn't call it, it doesn't belong in
-`Shared`. Shared is the contract surface between client and server, nothing more.
-Server-only infrastructure lives in `SystemTools` or its own server-side library.
+## Logging in
 
-## Authentication
+Auth has two paths that end in the same place: a session token.
 
-Two paths, same outcome (session token + UDP endpoint).
+The normal path is an **Ed25519 key**. The client signs a timestamp with its
+private key, the server checks it, done — no password ever crosses the wire.
+Keys expire after 3 days, hard.
 
-- **Key path (returning player):** client signs a Unix-ms timestamp with its
-  Ed25519 private key. Check order is fixed: exists → timestamp within 30s →
-  signature → key age within 3 days. A stale key is rejected and the client falls
-  back to password.
-- **Password path (first run / lost / expired / new machine):** verified against a
-  stored Argon2id hash over TLS. On success the server rotates in a fresh Ed25519
-  keypair, persists it, then returns the new private seed once.
+The fallback is a **password**, verified against an Argon2id hash over TLS.
+First login, new machine, lost key, expired key — same path. And here's the
+part I like: a successful password login mints a *fresh* Ed25519 keypair on
+the server and hands the private seed back to the client, once. So the
+password path doesn't just log you in, it re-arms the key path. The system
+heals itself back toward the good path every time you fall off it.
 
-Account creation is **admin-only** — there is no self-service registration.
-Accounts are managed from the **Core** operator console (create / reset / delete /
-list); every action is written to a dedicated audit log. Session tokens are
-stateless HMAC-SHA256 with a 30s lifetime.
+The key-path check order is deliberate: does the account exist → is the
+timestamp fresh → is the signature valid → is the key expired. Expiry comes
+*after* signature so a stranger can't probe which accounts exist by watching
+which error they get. Failed password attempts lock the account for a minute
+after three tries. Every auth failure is a disconnect.
 
-## Logging
+There's no self-service registration. Accounts get created at the operator
+console in Core, on purpose. At 25 players I'd rather know everyone who has
+an account than build a signup flow.
 
-A single `DiskManager` owns all disk I/O and fans log output to multiple
-daily-rolling files (rolling at UTC midnight), keyed by a `LogFile` enum. Three
-independent facades write through it:
+## Saving things
 
-- **Scribe** → `server_{date}.log` — severity-tagged runtime + exceptions, with
-  caller context and color-coded console output.
-- **AdminToolLog** → `admin_{date}.log` — account-management audit trail; records
-  every action, success and failure.
-- **SimulationLog** → `simulation_{date}.log` — reserved for non-network game
-  logic (not yet active).
+Flat files. No database.
 
-All log timestamps are UTC, so filenames and line stamps agree.
-
-## Persistence
-
-Flat files, no database. Atomic writes (tmp + fsync + rename). Accounts are global;
-characters are per-shard.
+I went back and forth on this, but at this scale a database is solving a
+problem I don't have. What I actually need is: writes that can't corrupt
+(tmp file + fsync + rename, atomically), JSON I can open in a text editor
+when something looks wrong, binary deltas for voxel edits, and append-only
+logs for events. All of that is just files.
 
 ```
-data/config/        runtime config (never committed)
-data/certs/         server.pfx, server.cer
-data/keys/          session_token.key
-data/accounts/      {id}_account.json
-data/shards/        per-shard characters, zones, items, voxels, events
-data/logs/          server_{date}.log, admin_{date}.log
+data/config/      runtime config — never committed
+data/certs/       server certificate
+data/keys/        session token key
+data/accounts/    one JSON file per account
+data/characters/  player characters
+data/zones/       per-zone state
+data/world/       world flags
+data/logs/        server / admin logs, rolling at UTC midnight
 ```
 
-`data/` is gitignored; config ships as first-run artifacts from record defaults.
+Everything under `data/` is gitignored. Config is a runtime artifact that
+ships itself from defaults on first run.
 
-## Status
+## Where it actually is right now
 
-**Built:** logging (Scribe + multi-sink DiskManager + admin audit log), storage
-(DiskManager, ConfigStore), config records, Heartbeat, security primitives (certs,
-Ed25519, Argon2id, session tokens), account management (`AccountManager` + the Core
-operator console), shared packet/channel definitions, the networking layer
-(dispatcher, TCP/UDP hosts), and the full LoginServer near-term slice — it boots,
-binds, runs both auth paths, and tears down cleanly.
+The full auth round trip is **passing**. There's a project in the solution
+called `Probe` whose whole job is to be a paranoid fake client: it connects
+over real TLS, logs in with a password, catches the freshly minted key seed,
+disconnects, reconnects, and logs in again with the key — both paths, one
+run, against real account files. Every time I touch the auth or wire code,
+the Probe gets re-run. It's my regression test in exe form.
 
-**Next:** a full auth round-trip test — create an account in Core, then
-authenticate against LoginServer across both key and password paths.
+So as of now: logging, storage, the security primitives, accounts, the
+operator console in Core (including launching the login server as a child
+process), the LoginServer itself, and the Probe are all built and verified
+end to end.
 
-**Later:** ConnectionManager, ZoneManager and zone processes, Core server-control
-and resource-monitoring features, ECS core, AI (perception, utility AI, GOAP), the
-blueprint loader, and the voxel system.
+## What's next
+
+1. The **UDP handshake** — the session token provably reaches the client
+   now, so the next step is the packet that carries it over UDP and the
+   session registry that validates it. I've deferred this one repeatedly.
+   It's genuinely next this time.
+2. **ConnectionManager**, then ZoneManager and the zone processes.
+3. The simulation itself — hand-rolled ECS, 60 Hz fixed timestep, and an AI
+   stack (utility AI out of combat, GOAP in combat) where NPCs only know
+   what their senses actually tell them. No cheating with omniscient mobs.
 
 ## License
 
