@@ -17,6 +17,7 @@ using System.Net;
 using System.Threading.Tasks;
 using Shared.Networking.Packets.Auth;
 using Networking.Tcp;
+using SystemTools;
 
 namespace LoginServer;
 
@@ -26,27 +27,23 @@ namespace LoginServer;
 /// </summary>
 internal static class Program
 {
-    private const string DataRoot = @"E:\Stratum\data";
-    private const string CertificatePath = @"E:\Stratum\data\certs\server.pfx";
-    private const string ServerConfigPath = @"E:\Stratum\data\config\server.json";
-    private const string NetworkConfigPath = @"E:\Stratum\data\config\network.json";
 
     private static async Task Main()
     {
-        DiskManager.Initialize(DataRoot);
+        DiskManager.Initialize();
 
         TcpHost? host = null;
 
         try
         {
-            var serverConfig = ConfigStore.LoadOrCreate<ServerConfig>(ServerConfigPath);
-            var networkConfig = ConfigStore.LoadOrCreate<NetworkConfig>(NetworkConfigPath);
+            var serverConfig = ConfigStore.LoadOrCreate<ServerConfig>(Constellations.ServerConfigPath);
+            var networkConfig = ConfigStore.LoadOrCreate<NetworkConfig>(Constellations.NetworkConfigPath);
 
             if (!IPAddress.TryParse(networkConfig.BindAddress, out var bindAddress))
                 Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
                 $"Invalid bindAddress in config: '{networkConfig.BindAddress}'."));
 
-            var certificate = CertificateProvider.LoadOrCreate(CertificatePath);
+            var certificate = CertificateProvider.LoadOrCreate(Constellations.CertificatePath);
 
             AccountStore.Initialize();
 
@@ -54,8 +51,11 @@ internal static class Program
             SessionTokenIssuer.Initialize(signingKey);
 
             var lockout = new LoginServer.LockoutTracker();
+            var udpHost = string.Concat(networkConfig.UdpAddress, ":", 
+                networkConfig.UdpPort.ToString());
+
             var handlers = new AuthHandler(
-                AccountStore.Instance, lockout, networkConfig.AdvertisedUdpEndpoint);
+                AccountStore.Instance, lockout, udpHost);
 
             var dispatcher = new PacketDispatcher<TcpConnection>();
             dispatcher.Register<AuthByKeyPacket>(

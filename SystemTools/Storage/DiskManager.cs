@@ -68,8 +68,10 @@ public sealed class DiskManager
     /// destinations are fixed per <see cref="LogFile"/>; each rolls over automatically at UTC midnight.
     /// </summary>
     /// <param name="rootPath">The root directory all relative paths are resolved against. Created if missing.</param>
-    public static void Initialize(string rootPath)
+    public static void Initialize()
     {
+        var rootPath = Constellations.DataRoot;
+
         if (_initialized) return;
         _instance = new DiskManager(rootPath);
         _initialized = true;

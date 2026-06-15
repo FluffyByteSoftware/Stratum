@@ -14,14 +14,12 @@ namespace Core;
 
 internal static class Program
 {
-    private const string DataRoot = @"E:\Stratum\data";
-
     private static bool ServerRunning =>
         LoginServerProcess.IsRunning || SentinelProcess.IsRunning;
 
     private static async Task<int> Main()
     {
-        DiskManager.Initialize(DataRoot);
+        DiskManager.Initialize();
         AccountStore.Initialize();
 
         try

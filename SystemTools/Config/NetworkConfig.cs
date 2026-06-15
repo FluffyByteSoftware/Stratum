@@ -28,12 +28,19 @@ public sealed class NetworkConfig
     public int Port { get; set; } = 9997;
 
     /// <summary>
-    /// The UDP endpoint (host:port) of the Sentinel front door, advertised to
-    /// clients after successful TCP authentication so they know where to send
-    /// the session token. Must match the address and port Sentinel binds.
+    /// Udp host address (runs Sentinel)
     /// </summary>
-    [JsonProperty("advertisedUdpEndpoint")]
-    public string AdvertisedUdpEndpoint { get; set; } = "10.0.0.84:9998";
+
+    [JsonProperty("udpIp")]
+    public string UdpAddress { get; set; } = "10.0.0.84";
+
+    /// <summary>
+    /// Udp host port running Sentinel
+    /// </summary>
+    [JsonProperty("udpPort")]
+    public int UdpPort { get; set; } = 9998;
+
+
 }
 
 

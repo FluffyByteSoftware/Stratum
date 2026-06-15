@@ -10,6 +10,7 @@ using LiteNetLib;
 using LiteNetLib.Utils;
 using Networking.Dispatch;
 using Networking.Udp;
+using Shared;
 using Shared.Networking;
 using Shared.Networking.Packets.Auth;
 using Shared.Networking.Packets.Comparable;
@@ -17,6 +18,7 @@ using Stratum.Networking.Dispatch;
 using System;
 using System.Buffers.Binary;
 using System.Threading.Tasks;
+using SystemTools;
 using SystemTools.Logger;
 using SystemTools.Security;
 using SystemTools.Storage;
@@ -33,7 +35,6 @@ namespace Sentinel;
 /// </summary>
 internal static class Program
 {
-    private const string DataRoot = @"E:\Stratum\data";
     private const int UdpPort = 9998;
 
     private static readonly ClientSessionRegistry _registry = new();
@@ -42,7 +43,7 @@ internal static class Program
 
     private static async Task Main()
     {
-        DiskManager.Initialize(DataRoot);
+        DiskManager.Initialize();
 
         try
         {
