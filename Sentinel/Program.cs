@@ -19,6 +19,7 @@ using System;
 using System.Buffers.Binary;
 using System.Threading.Tasks;
 using SystemTools;
+using SystemTools.Config;
 using SystemTools.Logger;
 using SystemTools.Security;
 using SystemTools.Storage;
@@ -35,8 +36,6 @@ namespace Sentinel;
 /// </summary>
 internal static class Program
 {
-    private const int UdpPort = 9998;
-
     private static readonly ClientSessionRegistry _registry = new();
     private static readonly PacketDispatcher<UdpConnection> _dispatcher = new();
     private static UdpHost? _host;
@@ -61,7 +60,10 @@ internal static class Program
                 OnVersionResponse);
             _dispatcher.Freeze();
 
-            _host = new UdpHost(UdpPort);
+            NetworkConfig netConfig = ConfigStore
+                .LoadOrCreate<NetworkConfig>(Constellations.NetworkConfigPath);
+
+            _host = new UdpHost(netConfig.UdpPort);
             _host.ConnectionRequested += OnConnectionRequested;
             _host.PeerConnected += OnPeerConnected;
             _host.PeerDisconnected += OnPeerDisconnected;
@@ -70,7 +72,8 @@ internal static class Program
             _host.Start();
 
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
-                $"Sentinel ready. UDP auth listening on port {UdpPort}."));
+                $"Sentinel ready. UDP auth listening on port " +
+                $"{netConfig.UdpPort}."));
 
             await WaitForShutdownAsync();
         }
@@ -186,7 +189,7 @@ internal static class Program
         uint typeId = BinaryPrimitives.ReadUInt32BigEndian(raw);
 
         var payloadReader = new NetDataReader();
-        
+
         payloadReader.SetSource(raw, sizeof(uint), raw.Length);
 
         var connection = new UdpConnection(peer);
