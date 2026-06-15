@@ -16,7 +16,8 @@ internal static class Program
 {
     private const string DataRoot = @"E:\Stratum\data";
 
-    private static bool ServerRunning => LoginServerProcess.IsRunning;
+    private static bool ServerRunning =>
+        LoginServerProcess.IsRunning || SentinelProcess.IsRunning;
 
     private static async Task<int> Main()
     {
@@ -80,8 +81,7 @@ internal static class Program
                 case "0":
                 case "quit":
                 case "exit":
-                    if (LoginServerProcess.IsRunning)
-                        LoginServerProcess.ForceStop();
+                    StopAll();
                     return;
                 default:
                     Console.WriteLine($"Unknown option: '{choice}'.");
@@ -109,23 +109,23 @@ internal static class Program
 
     private static void StartStopServer()
     {
-        if (LoginServerProcess.IsRunning)
+        if (ServerRunning)
         {
-            Console.WriteLine("LoginServer is running.\n");
-            Console.WriteLine("To stop it gracefully, press Ctrl+C " +
-                "in its own window.");
-            Console.Write("Force-stop instead? Buffered writes may be lost (y/n)? ");
+            Console.WriteLine("Stratum server is running.\n");
+            Console.WriteLine("To stop gracefully, press Ctrl+C in each "
+                + "server's own window.");
+            Console.Write("Force-stop both instead? "
+                + "Buffered writes may be lost (y/n)? ");
 
             var answer = Console.ReadLine()?.Trim();
 
-            if(string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
             {
-                LoginServerProcess.ForceStop();
-                Console.WriteLine("LoginServer force-stopped");
+                StopAll();
             }
             else
             {
-                Console.WriteLine("Cancelled; LoginServer left running.");
+                Console.WriteLine("Cancelled; servers left running.");
             }
 
             return;
@@ -140,15 +140,47 @@ internal static class Program
                 Console.WriteLine("LoginServer is already running.");
                 break;
             case StartResult.ExecutableNotFound:
-                Console.WriteLine("Could not find LoginServer.exe in any known location."
-                    + "Build the LoginServer project first.");
+                Console.WriteLine("Could not find LoginServer.exe in any "
+                    + "known location. Build the LoginServer project first.");
                 break;
             case StartResult.Failed:
-                Console.WriteLine($"Failed to launch LoginServer. See server log for " +
-                    $"details.");
+                Console.WriteLine("Failed to launch LoginServer. See server "
+                    + "log for details.");
                 break;
         }
 
+        switch (SentinelProcess.Start())
+        {
+            case StartResult.Started:
+                Console.WriteLine("Sentinel started in its own window.");
+                break;
+            case StartResult.AlreadyRunning:
+                Console.WriteLine("Sentinel is already running.");
+                break;
+            case StartResult.ExecutableNotFound:
+                Console.WriteLine("Could not find Sentinel.exe in any "
+                    + "known location. Build the Sentinel project first.");
+                break;
+            case StartResult.Failed:
+                Console.WriteLine("Failed to launch Sentinel. See server "
+                    + "log for details.");
+                break;
+        }
+    }
+
+    private static void StopAll()
+    {
+        if (LoginServerProcess.IsRunning)
+        {
+            LoginServerProcess.ForceStop();
+            Console.WriteLine("LoginServer force-stopped.");
+        }
+
+        if (SentinelProcess.IsRunning)
+        {
+            SentinelProcess.ForceStop();
+            Console.WriteLine("Sentinel force-stopped.");
+        }
     }
 
     private static void CheckResources()
@@ -161,9 +193,10 @@ internal static class Program
         Console.WriteLine("Welcome to Stratum Core");
         Console.WriteLine("Please select an option.");
         Console.WriteLine();
-        if (ServerRunning)
+
+        if (!ServerRunning)
         {
-            Console.WriteLine("  1) Stop Stratum Server");
+            Console.WriteLine("  1) Start Stratum Server");
         }
         else
         {

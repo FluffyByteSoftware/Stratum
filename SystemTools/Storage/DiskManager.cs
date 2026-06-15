@@ -6,6 +6,7 @@
  *-------------------------------------------------------------
  */
 
+using System.Reflection;
 using System.Text;
 
 namespace SystemTools.Storage;
@@ -25,6 +26,7 @@ public sealed class DiskManager
     private const long MaxCacheBytes = 50L * 1024 * 1024;
     private const int FlushIntervalMs = 2000;
     private const string DateToken = "{date}";
+    private const string ProcToken = "{proc}";
 
     private static DiskManager? _instance;
     private static bool _initialized;
@@ -79,10 +81,12 @@ public sealed class DiskManager
         Directory.CreateDirectory(_rootPath);
 
         var today = DateTime.UtcNow.Date;
+        var procTag = ResolveProcessTag();
         _logSinks = new LogSink[LogTemplates.Length];
         for (int i = 0; i < LogTemplates.Length; i++)
         {
-            var sink = new LogSink(LogTemplates[i]);
+            var template = LogTemplates[i].Replace(ProcToken, procTag);
+            var sink = new LogSink(template);
             sink.Roll(today, _rootPath);
             EnsureDirectoryFor(sink.CurrentPath);
             _logSinks[i] = sink;
@@ -93,9 +97,9 @@ public sealed class DiskManager
 
     private static readonly string[] LogTemplates =
     [
-        "logs/server_{date}.log",      // LogFile.Server
-        "logs/admin_{date}.log",       // LogFile.Admin
-        "logs/simulation_{date}.log"   // LogFile.Simulation
+        "logs/server_{proc}_{date}.log",      // LogFile.Server
+        "logs/admin_{proc}_{date}.log",       // LogFile.Admin
+        "logs/simulation_{proc}_{date}.log"   // LogFile.Simulation
     ];
 
     /// <summary>
@@ -387,6 +391,14 @@ public sealed class DiskManager
             File.Replace(tmpPath, fullPath, null);
         else
             File.Move(tmpPath, fullPath);
+    }
+
+    private static string ResolveProcessTag()
+    {
+        var name = Assembly.GetEntryAssembly()?.GetName().Name;
+        return string.IsNullOrEmpty(name)
+            ? Environment.ProcessId.ToString()
+            : name.ToLowerInvariant();
     }
 
     private sealed class LogSink(string template)

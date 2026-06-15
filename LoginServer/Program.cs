@@ -26,13 +26,10 @@ namespace LoginServer;
 /// </summary>
 internal static class Program
 {
-    private const string DataRoot =             @"E:\Stratum\data";
-    private const string CertificatePath =      @"E:\Stratum\data\certs\server.pfx";
-    private const string ServerConfigPath =     @"E:\Stratum\config\server.json";
-    private const string NetworkConfigPath =    @"E:\Stratum\config\network.json";
-
-    // PLACEHOLDER UNTIL UDP IS WRITTEN
-    private const string AdvertisedUdpEndpoint = "10.0.0.84:9998";
+    private const string DataRoot = @"E:\Stratum\data";
+    private const string CertificatePath = @"E:\Stratum\data\certs\server.pfx";
+    private const string ServerConfigPath = @"E:\Stratum\data\config\server.json";
+    private const string NetworkConfigPath = @"E:\Stratum\data\config\network.json";
 
     private static async Task Main()
     {
@@ -58,7 +55,7 @@ internal static class Program
 
             var lockout = new LoginServer.LockoutTracker();
             var handlers = new AuthHandler(
-                AccountStore.Instance, lockout, AdvertisedUdpEndpoint);
+                AccountStore.Instance, lockout, networkConfig.AdvertisedUdpEndpoint);
 
             var dispatcher = new PacketDispatcher<TcpConnection>();
             dispatcher.Register<AuthByKeyPacket>(

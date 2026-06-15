@@ -41,6 +41,25 @@ namespace Shared.Networking
             /// Packet Id for Udp authentication acknowledgement
             /// </summary>
             public const uint UdpAuthAck        = 0x00_00_00_05;
+
+            /// <summary>
+            /// Server-to-client challenge carrying the server's current
+            /// protocol version string.
+            /// </summary>
+            public const uint VersionChallenge = 0x00_00_00_06;
+
+            /// <summary>
+            /// Client-to-server response carrying the client's reported
+            /// protocol version string.
+            /// </summary>
+            public const uint VersionResponse = 0x00_00_00_07;
+
+            /// <summary>
+            /// Server-to-client result indicating whether the reported
+            /// version matched. Followed by disconnect on
+            /// <see cref="Shared.Networking.Packets.Auth.VersionResultPacket.Mismatch"/>.
+            /// </summary>
+            public const uint VersionResult = 0x00_00_00_08;
         }
 
         /// <summary>

@@ -6,7 +6,9 @@
  *-------------------------------------------------------------
  */
 
-namespace Stratum.Networking.Dispatch;
+using Stratum.Networking.Dispatch;
+
+namespace Networking.Dispatch;
 
 public readonly struct DispatchResult
 {
@@ -14,11 +16,13 @@ public readonly struct DispatchResult
     /// The outcome of the packet dispatch.
     /// </summary>
     public DispatchOutcome Outcome { get; }
+
     /// <summary>
     /// The TypeId of the packet/dispatch outcome.
     /// Used for logging/metrics primarily.
     /// </summary>
     public uint TypeId { get; }
+
     /// <summary>
     /// The exception (if available) that occurred at the dispatcher.
     /// </summary>

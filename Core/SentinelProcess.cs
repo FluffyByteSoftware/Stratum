@@ -1,7 +1,7 @@
 /*
- * (LoginServerProcess.cs)
+ * (SentinelProcess.cs)
  *------------------------------------------------------------
- * Created - 6/11/2026 8:09:40 PM
+ * Created - 6/13/2026
  * Created by - Seliris
  *-------------------------------------------------------------
  */
@@ -12,34 +12,28 @@ using SystemTools.Logger;
 namespace Core;
 
 /// <summary>
-/// OUtcome of a Start request, so the menu can report precisely.
+/// Owns the Sentinel child process for the Core session. The child runs in
+/// its own console window (UseShellExecute), so its Scribe/Console output
+/// stays out of Core's menu and its own Ctrl+C handler performs the graceful
+/// flush + DiskManager shutdown. Core's only programmatic lever is ForceStop
+/// (Kill), which is deliberately lossy and is not a graceful stop.
 /// </summary>
-internal enum StartResult
+/// <remarks>
+/// Sentinel and LoginServer are siblings under Core, not parent and child of
+/// each other: each survives the other's restart. <see cref="StartResult"/>
+/// is shared with <see cref="LoginServerProcess"/>.
+/// </remarks>
+internal static class SentinelProcess
 {
-    Started,
-    AlreadyRunning,
-    ExecutableNotFound,
-    Failed
-}
-
-/// <summary>
-/// Owns the login server child process for the Core session. The child
-/// runs in its own console window (UseShellExecute), so its Scribe/Console
-/// output stays out of Core's menu and its own Ctrl+C handler performs the
-/// graceful flush + AccountStore shutdown.  Core's only programmatic lever is 
-/// ForceStop (Kill), which is deliberately lossy and is not a graceful stop.
-/// </summary>
-internal static class LoginServerProcess
-{
-    private const string ExeName = "LoginServer.exe";
-    private const string LoginServerDir = "LoginServer";
+    private const string ExeName = "Sentinel.exe";
+    private const string SentinelDir = "Sentinel";
 
     private static readonly string[] BuildConfigurations = ["Debug", "Release"];
 
     private static Process? _process;
 
     /// <summary>
-    /// Check to see if the LoginServerProcess is currently running.
+    /// Check to see if the Sentinel process is currently running.
     /// </summary>
     public static bool IsRunning
     {
@@ -48,10 +42,7 @@ internal static class LoginServerProcess
             Process? p = _process;
 
             if (p is null)
-            {
                 return false;
-            }
-
             try
             {
                 return !p.HasExited;
@@ -68,9 +59,9 @@ internal static class LoginServerProcess
     }
 
     /// <summary>
-    /// Attempts to start the LoginServerProcess.
+    /// Attempts to start the Sentinel process.
     /// </summary>
-    /// <returns>The result (either process started or failed)</returns>
+    /// <returns>The result (either process started or failed).</returns>
     public static StartResult Start()
     {
         if (IsRunning)
@@ -83,7 +74,7 @@ internal static class LoginServerProcess
         _process = null;
 
         string? exe = ResolveExecutable();
-        
+
         if (exe is null)
             return StartResult.ExecutableNotFound;
 
@@ -99,18 +90,17 @@ internal static class LoginServerProcess
             _process = Process.Start(startInfo);
             return _process is null ? StartResult.Failed : StartResult.Started;
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
-                $"Failed to launch LoginServer from '{exe}'.", ex));
+                $"Failed to launch Sentinel from '{exe}'.", ex));
 
             return StartResult.Failed;
         }
-
     }
 
     /// <summary>
-    /// For the process to terminate.  This is not a graceful shutdown.
+    /// Forces the process to terminate. This is not a graceful shutdown.
     /// </summary>
     public static void ForceStop()
     {
@@ -148,12 +138,12 @@ internal static class LoginServerProcess
 
         string? root = FindProjectRoot(baseDir);
 
-        if(root is not null)
+        if (root is not null)
         {
-            foreach(string config in BuildConfigurations)
+            foreach (string config in BuildConfigurations)
             {
                 candidates.Add(Path.Combine(
-                    root, LoginServerDir, "bin", config, tfm, ExeName));
+                    root, SentinelDir, "bin", config, tfm, ExeName));
             }
         }
 
@@ -166,9 +156,9 @@ internal static class LoginServerProcess
     {
         var dir = new DirectoryInfo(start);
 
-        while(dir is not null)
+        while (dir is not null)
         {
-            if (Directory.Exists(Path.Combine(dir.FullName, LoginServerDir)))
+            if (Directory.Exists(Path.Combine(dir.FullName, SentinelDir)))
                 return dir.FullName;
 
             dir = dir.Parent;
@@ -178,11 +168,9 @@ internal static class LoginServerProcess
     }
 }
 
-
-
 /*
  *------------------------------------------------------------
- * (LoginServerProcess.cs)
+ * (SentinelProcess.cs)
  * See License.txt for licensing information.
  *-----------------------------------------------------------
  */
