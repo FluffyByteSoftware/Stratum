@@ -20,7 +20,7 @@ namespace Shared.Networking.Packets.Auth
     {
         /// <summary>
         /// The server's current protocol version string.
-        /// Populated from <see cref="ProtocolVersion.Current"/>
+        /// Populated from <see cref="GameProtocolVersion.Current"/>
         /// before sending; read back verbatim on the receive side.
         /// </summary>
         public string Version;

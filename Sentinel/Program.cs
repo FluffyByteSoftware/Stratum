@@ -185,7 +185,8 @@ internal static class Program
         uint typeId = BinaryPrimitives.ReadUInt32BigEndian(raw);
 
         var payloadReader = new NetDataReader();
-        payloadReader.SetSource(raw, sizeof(uint), raw.Length - sizeof(uint));
+        
+        payloadReader.SetSource(raw, sizeof(uint), raw.Length);
 
         var connection = new UdpConnection(peer);
 

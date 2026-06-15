@@ -1,5 +1,5 @@
 /*
- * (ProtocolVersion.cs)
+ * (GameProtocolVersion.cs)
  *------------------------------------------------------------
  * Created - 6/14/2026 1:37:58 PM
  * Created by - Seliris
@@ -29,7 +29,7 @@ namespace Shared.Networking.Packets.Comparable
 
 /*
  *------------------------------------------------------------
- * (ProtocolVersion.cs)
+ * (GameProtocolVersion.cs)
  * See License.txt for licensing information.
  *-----------------------------------------------------------
  */

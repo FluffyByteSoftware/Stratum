@@ -11,6 +11,7 @@ using LiteNetLib.Utils;
 using Networking.Tcp;
 using Shared.Networking;
 using Shared.Networking.Packets.Auth;
+using Shared.Networking.Packets.Comparable;
 using Shared.Networking.Packets.LifeCycle;
 using System.Buffers.Binary;
 using System.Net.Security;
@@ -39,7 +40,9 @@ internal static class Program
     private const string SentinelHost = "10.0.0.84";
     private const int SentinelPort = 9998;
 
-    private static readonly TimeSpan UdpAuthTimeout = TimeSpan.FromSeconds(3);
+    // Bumped from 3 s to accommodate the extra version-check round trips
+    // (challenge → response → result) on top of the auth ack.
+    private static readonly TimeSpan UdpAuthTimeout = TimeSpan.FromSeconds(5);
 
     private static async Task Main()
     {
@@ -88,11 +91,13 @@ internal static class Program
                     is not { } keyResponse)
                 return;
 
-            // Leg 3 - UDP auth against Sentinel using the token leg 2 issued.
-            // Proves the TCP-minted token validates over UDP and the ack
-            // round-trips with correct big-endian framing.
+            // Legs 3 + 4 - UDP auth against Sentinel using the token leg 2
+            // issued, followed by the protocol version check that follows
+            // a successful admission. Both run over the same persistent
+            // LiteNetLib connection.
             Console.WriteLine();
             Console.WriteLine("[3] UDP auth with leg-2 token ...");
+            Console.WriteLine("[4] Protocol version check ...");
 
             UdpAuth(keyResponse.SessionToken);
         }
@@ -136,51 +141,88 @@ internal static class Program
         return response;
     }
 
-    // Leg 3: stand up a LiteNetLib client, present the session token as the
-    // connection-request data, and wait for Sentinel's ack. A rejected token
-    // never establishes a peer, so connection failure or timeout is the fail
-    // path; only a received Authenticated ack passes.
+    // Legs 3 and 4: stand up a LiteNetLib client, present the session token
+    // as connection-request data, wait for Sentinel's auth ack, then handle
+    // the version challenge/response/result exchange over the same connection.
     private static void UdpAuth(string token)
     {
         var listener = new EventBasedNetListener();
         var client = new NetManager(listener);
 
-        UdpAuthResult result = UdpAuthResult.None;
-        bool acked = false;
+        UdpAuthResult authResult = UdpAuthResult.None;
+        VersionResult versionResult = VersionResult.None;
+        bool authAcked = false;
+        bool versionChecked = false;
         bool disconnected = false;
 
-        listener.PeerConnectedEvent += peer =>
-            Console.WriteLine("    Connected; awaiting ack.");
+        listener.PeerConnectedEvent += _ =>
+            Console.WriteLine("    Connected; awaiting UDP auth ack.");
 
-        listener.PeerDisconnectedEvent += (peer, info) =>
+        listener.PeerDisconnectedEvent += (_, info) =>
         {
             disconnected = true;
             Console.WriteLine($"    Disconnected: {info.Reason}.");
         };
 
-        listener.NetworkReceiveEvent += (peer, reader, channel, method) =>
+        listener.NetworkReceiveEvent += (peer, reader, _, _) =>
         {
             byte[] data = reader.GetRemainingBytes();
             reader.Recycle();
 
-            if (data.Length < sizeof(uint) + 1)
+            if (data.Length < sizeof(uint))
             {
                 Console.WriteLine(
-                    $"    Ack too short: {data.Length} bytes.");
+                    $"    Packet too short ({data.Length} bytes); dropping.");
                 return;
             }
 
             uint typeId = BinaryPrimitives.ReadUInt32BigEndian(data);
 
-            if (typeId != PacketIds.Auth.UdpAuthAck)
+            var payload = new NetDataReader();
+            // was: payload.SetSource(data, sizeof(uint), data.Length - sizeof(uint));
+            payload.SetSource(data, sizeof(uint), data.Length);
+
+            if (typeId == PacketIds.Auth.UdpAuthAck)
             {
-                Console.WriteLine(
-                    $"    Unexpected ack type 0x{typeId:X8}.");
+                if (payload.AvailableBytes < 1)
+                {
+                    Console.WriteLine("    Auth ack payload too short; dropping.");
+                    return;
+                }
+                authResult = (UdpAuthResult)payload.GetByte();
+                authAcked = true;
                 return;
             }
 
-            result = (UdpAuthResult)data[sizeof(uint)];
-            acked = true;
+            if (typeId == PacketIds.Auth.VersionChallenge)
+            {
+                string serverVersion = payload.GetString();
+                Console.WriteLine(
+                    $"    Version challenge: server={serverVersion}; " +
+                    $"responding with client={GameProtocolVersion.Current}.");
+
+                SendUdpPacket(peer, new VersionResponsePacket
+                {
+                    Version = GameProtocolVersion.Current,
+                });
+                return;
+            }
+
+            if (typeId == PacketIds.Auth.VersionResult)
+            {
+                if (payload.AvailableBytes < 1)
+                {
+                    Console.WriteLine(
+                        "    Version result payload too short; dropping.");
+                    return;
+                }
+                versionResult = (VersionResult)payload.GetByte();
+                versionChecked = true;
+                return;
+            }
+
+            Console.WriteLine(
+                $"    Unexpected type 0x{typeId:X8}; dropping.");
         };
 
         client.Start();
@@ -188,7 +230,7 @@ internal static class Program
 
         var deadline = DateTime.UtcNow + UdpAuthTimeout;
 
-        while (!acked && !disconnected && DateTime.UtcNow < deadline)
+        while (!versionChecked && !disconnected && DateTime.UtcNow < deadline)
         {
             client.PollEvents();
             Thread.Sleep(15);
@@ -196,12 +238,52 @@ internal static class Program
 
         client.Stop();
 
-        if (acked && result == UdpAuthResult.Authenticated)
-            Console.WriteLine("    OK  UDP session authenticated.");
-        else if (acked)
-            Console.WriteLine($"    FAIL  ack result was {result}.");
+        // Leg 3 report
+        if (!authAcked)
+        {
+            Console.WriteLine(
+                "    FAIL  [3] No UDP auth ack (rejected or timed out).");
+            return;
+        }
+
+        if (authResult != UdpAuthResult.Authenticated)
+        {
+            Console.WriteLine($"    FAIL  [3] Auth result was {authResult}.");
+            return;
+        }
+
+        Console.WriteLine("    OK    [3] UDP session authenticated.");
+
+        // Leg 4 report
+        if (!versionChecked)
+        {
+            Console.WriteLine(
+                "    FAIL  [4] No version result received (timed out).");
+            return;
+        }
+
+        if (versionResult == VersionResult.Ok)
+            Console.WriteLine("    OK    [4] Protocol version accepted.");
         else
-            Console.WriteLine("    FAIL  no ack (rejected or timed out).");
+            Console.WriteLine(
+                $"    FAIL  [4] Version result was {versionResult}.");
+    }
+
+    // Serializes and sends a single UDP packet to a peer with the 4-byte
+    // big-endian type header. Mirrors UdpHost.Send but uses a heap-allocated
+    // header array because stackalloc is unavailable inside lambda closures.
+    private static void SendUdpPacket<T>(NetPeer peer, T packet)
+        where T : struct, IPacketWritable
+    {
+        var writer = new NetDataWriter();
+
+        byte[] typeHeader = new byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32BigEndian(typeHeader, packet.TypeId);
+        writer.Put(typeHeader);
+
+        packet.Serialize(writer);
+
+        peer.Send(writer, 0, DeliveryMethod.ReliableOrdered);
     }
 
     // Sync helper: stackalloc is illegal in an async method, and the signed
