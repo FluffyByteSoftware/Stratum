@@ -64,7 +64,7 @@ public static class AccountManager
                 Id = accountId,
                 PublicKey = Convert.ToBase64String(keys.PublicKey),
                 PasswordHash = hash,
-                IssuedAt = now,
+                TimeLastKeyIssued = now,
                 CreatedAt = now
             };
 
@@ -164,7 +164,7 @@ public static class AccountManager
                 Id = existing.Id,
                 PublicKey = existing.PublicKey,
                 PasswordHash = PasswordHasher.Hash(password),
-                IssuedAt = existing.IssuedAt,
+                TimeLastKeyIssued = existing.TimeLastKeyIssued,
                 CreatedAt = existing.CreatedAt
             };
 

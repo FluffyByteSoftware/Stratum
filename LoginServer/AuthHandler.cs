@@ -95,7 +95,7 @@ public sealed class AuthHandler(
             conn.RequestDisconnect(SecureDisconnectReason.InvalidUserCredentials);
             return;
         }
-        var issuedUtc = DateTime.SpecifyKind(record.IssuedAt, DateTimeKind.Utc);
+        var issuedUtc = DateTime.SpecifyKind(record.TimeLastKeyIssued, DateTimeKind.Utc);
         if(DateTime.UtcNow - issuedUtc > TimeSpan.FromDays(KeyLifetimeDays))
         {
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
@@ -172,7 +172,7 @@ public sealed class AuthHandler(
             Id = record.Id,
             PublicKey = Convert.ToBase64String(keyPair.PublicKey),
             PasswordHash = record.PasswordHash,
-            IssuedAt = DateTime.UtcNow,
+            TimeLastKeyIssued = DateTime.UtcNow,
             CreatedAt = record.CreatedAt
         };
 
