@@ -7,7 +7,6 @@
  */
 
 using Shared.Game.Characters;
-using Shared.Game.Characters.PlayerClasses;
 using System.Text.Json.Serialization;
 
 namespace SystemTools.Characters;
@@ -45,14 +44,8 @@ public sealed class CharacterRecord
     /// For now a free form string, will be replaced by an enum.
     /// </summary>
     [JsonPropertyName("species")]
-    public Species Species { get; init; } = Species.None;
+    public PlayableSpecies Species { get; init; } = PlayableSpecies.None;
     
-    /// <summary>
-    /// The player class of the character.
-    /// </summary>
-    [JsonPropertyName("playerClass")]
-    public PlayerClass Class { get; init; } = new PlayerClass("Default");
-
     /// <summary>
     /// The level of the character. This is a non-negative integer that represents the
     /// character's progression.

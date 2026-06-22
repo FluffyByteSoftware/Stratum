@@ -12,9 +12,16 @@ using SystemTools.Logger;
 namespace Core;
 
 /// <summary>
-/// OUtcome of a Start request, so the menu can report precisely.
+/// Outcome of a Start request, so the menu can report precisely.
+/// Started = Currently starting, but not yet ready to accept connections.
+/// AlreadyRunning = The process is already running, and the menu should
+/// not attempt to start the process again.
+/// ExecutableNotFound = The executable was not found, and the menu should
+/// not attempt to start the process again.
+/// Failed = The process failed to start, and the menu should not attempt 
+/// to start the process again.
 /// </summary>
-internal enum StartResult
+internal enum StartResult 
 {
     Started,
     AlreadyRunning,

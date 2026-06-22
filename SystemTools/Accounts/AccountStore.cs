@@ -51,12 +51,6 @@ public sealed partial class AccountStore
     private readonly ConcurrentDictionary<string, AccountRecord> _records
         = new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never
-    };
 
     /// <summary>
     /// Initializes the AccountStore singleton instance and performs an initial boot scan.
@@ -239,7 +233,7 @@ public sealed partial class AccountStore
                 var json = disk.ReadTextFile(relativePath);
                 record = JsonSerializer.Deserialize<AccountRecord>(
                     json,
-                    _jsonOptions);
+                    JsonConfigurator.ContentIndented);
             }
             catch (Exception ex)
             {
@@ -275,9 +269,9 @@ public sealed partial class AccountStore
         }
     }
 
-    private void PersistRecord(AccountRecord record)
+    private static void PersistRecord(AccountRecord record)
     {
-        var json = JsonSerializer.Serialize(record, _jsonOptions);
+        var json = JsonSerializer.Serialize(record, JsonConfigurator.ContentIndented);
         var relativePath = BuildRelativePath(record.Id);
         DiskManager.Instance.WriteTextFile(relativePath, json);
     }

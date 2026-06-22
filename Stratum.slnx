@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Core/Core.csproj" Id="1209b187-d4cb-4ca4-9a7d-e27a619806bc" />
+  <Project Path="Game/Game.csproj" Id="42173f35-0661-42f8-9443-14413d99a335" />
   <Project Path="LoginServer/LoginServer.csproj" />
   <Project Path="Networking/Networking.csproj" />
   <Project Path="Probe/Probe.csproj" Id="8bde782b-3d5f-4200-8ded-db8440c0fbb9" />

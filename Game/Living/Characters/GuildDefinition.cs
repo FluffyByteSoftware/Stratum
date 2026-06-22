@@ -1,27 +1,17 @@
-/*
- * (PlayerClass.cs)
+﻿/*
+ * (GuildDefinition.cs)
  *------------------------------------------------------------
- * Created - 6/16/2026 3:34:21 PM
+ * Created - 6/22/2026 8:21:02 AM
  * Created by - Seliris
  *-------------------------------------------------------------
  */
 
-namespace Shared.Game.Characters.PlayerClasses
-{
-    public class PlayerClass
-    {
-        public string Name { get; set; } = "";
+namespace Game.Living.Characters;
 
-        public PlayerClass(string className)
-        {
-            Name = className;
-        }
-    }
-}
 
 /*
  *------------------------------------------------------------
- * (PlayerClass.cs)
+ * (GuildDefinition.cs)
  * See License.txt for licensing information.
  *-----------------------------------------------------------
  */

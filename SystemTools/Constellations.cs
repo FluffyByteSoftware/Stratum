@@ -57,6 +57,16 @@ public static class Constellations
     /// </summary>
     public static readonly string NetworkConfigPath =
         Path.Combine(DataRoot, "config", "network.json");
+
+    /// <summary>
+    /// Path to the species configuration directory under the data root.
+    /// </summary>
+    /// <remarks>Contains a trailing directory separator as specified in the 
+    /// literal. Value is computed by
+    /// combining DataRoot with "game/species/" and may not exist on 
+    /// disk.</remarks>
+    public static readonly string SpeciesConfigPath =
+        Path.Combine(DataRoot, @"game/species");
 }
 
 

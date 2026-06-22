@@ -67,23 +67,6 @@ public sealed partial class CharacterStore
         = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Serializer options shared by every read and write. The
-    /// <see cref="JsonStringEnumConverter"/> is registered here, once, in the
-    /// initializer — enums such as <see cref="CharacterRecord.Species"/> then
-    /// persist by name (<c>"species": "Human"</c>) rather than by integer, keeping
-    /// the file legible. It must be configured at construction: a
-    /// <see cref="JsonSerializerOptions"/> instance becomes read-only after its
-    /// first (de)serialize, so mutating its converter list later would throw.
-    /// </summary>
-    private readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-        Converters = { new JsonStringEnumConverter() }
-    };
-
-    /// <summary>
     /// Initializes the singleton and performs an initial boot scan of the
     /// characters directory. Idempotent: a second call is a no-op.
     /// </summary>
@@ -294,7 +277,7 @@ public sealed partial class CharacterStore
                 var json = disk.ReadTextFile(relativePath);
                 record = JsonSerializer.Deserialize<CharacterRecord>(
                     json,
-                    _jsonOptions);
+                    JsonConfigurator.ContentIndented);
             }
             catch (Exception ex)
             {
@@ -334,9 +317,9 @@ public sealed partial class CharacterStore
     /// Serializes a record to JSON and writes it through
     /// <see cref="DiskManager"/> at its name-derived path.
     /// </summary>
-    private void PersistRecord(CharacterRecord record)
+    private static void PersistRecord(CharacterRecord record)
     {
-        var json = JsonSerializer.Serialize(record, _jsonOptions);
+        var json = JsonSerializer.Serialize(record, JsonConfigurator.ContentIndented);
         var relativePath = BuildRelativePath(record.CharacterName);
         DiskManager.Instance.WriteTextFile(relativePath, json);
     }

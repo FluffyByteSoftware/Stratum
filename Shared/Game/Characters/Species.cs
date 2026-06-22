@@ -1,42 +1,21 @@
-/*
- * (Species.cs)
- *------------------------------------------------------------
- * Created - 6/16/2026 12:01:39 PM
- * Created by - Seliris
- *-------------------------------------------------------------
- */
+﻿using System;
+using System.Collections.Generic;
+using System.Text;
 
 namespace Shared.Game.Characters
 {
     /// <summary>
-    /// Defines the various species available for character in the game.
-    /// Each species is hard coded with a unique identifier for use in
-    /// creation and by NPCs.
+    /// An enum of the available species types.
     /// </summary>
     public enum Species
     {
         /// <summary>
-        /// Default used for uninitialized characters
+        /// Used for default initialization and fall back catch.
         /// </summary>
         None = 0,
-
         /// <summary>
-        /// The human species, the most common and versatile species in 
-        /// the game world.
+        /// Human species.  The most abundant of the humanoids.
         /// </summary>
         Human = 1,
-        
-        /// <summary>
-        /// Undead represent the most common enemy type.
-        /// Reanimated corpses, ghosts, ghouls, oh my.
-        /// </summary>
-        Undead = 2,
     }
 }
-
-/*
- *------------------------------------------------------------
- * (Species.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
