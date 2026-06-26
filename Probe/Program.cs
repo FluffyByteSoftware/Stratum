@@ -1,7 +1,7 @@
 /*
  * (Program.cs)
  *------------------------------------------------------------
- * Created - 611/2026 1:04:18 AM
+ * Created - 6/11/2026 1:04:18 AM
  * Created by - Seliris
  *-------------------------------------------------------------
  */
@@ -18,11 +18,17 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
-using System.Threading;
 using SystemTools.Security;
 
 namespace Probe;
 
+/// <summary>
+/// Provides a command-line tool for probing Stratum authentication and protocol version checks against a server using
+/// both TCP and UDP connections.
+/// </summary>
+/// <remarks>Executes a multi-leg authentication sequence, including password and key-based authentication,
+/// followed by UDP session and protocol version validation. Intended for local testing and verification of
+/// authentication flows.</remarks>
 internal static class Program
 {
     private const string ServerHost = "10.0.0.84";
@@ -61,35 +67,68 @@ internal static class Program
         {
             // Leg 1 - password auth. On success the server mints a fresh
             // keypair, rewrites the account, and returns the private seed.
+            // It then applies the login→world decision: a character-bearing
+            // account answers Ok with a token; a character-less one answers
+            // NeedsCharacter with no token, but the freshly minted seed still
+            // rides so the account can key-auth on its create round-trip.
             Console.WriteLine();
             Console.WriteLine("[1] Password auth ...");
 
             if (await PasswordAuthAsync(accountId, password)
-                    .ConfigureAwait(false) is not { } response)
+                    .ConfigureAwait(false) is not { } pwdResponse)
                 return;
 
-            Console.WriteLine(
-                $"    OK  token={Truncate(response.SessionToken)}  "
-                + $"udp={response.UdpEndpoint}");
+            if (!ReportAuthLeg(1, pwdResponse))
+                return;
 
-            if (string.IsNullOrEmpty(response.IssuedPrivateKey))
+            if (string.IsNullOrEmpty(pwdResponse.IssuedPrivateKey))
             {
+                // The password path mints and persists a key on every success,
+                // for either outcome, so an empty seed here is anomalous and
+                // there is nothing to key-auth with.
                 Console.WriteLine(
-                    "    Server issued no private key; skipping key auth.");
+                    "    FAIL  [1] Success returned no private key; "
+                    + "cannot continue to key auth.");
                 return;
             }
 
-            byte[] seed = Convert.FromBase64String(response.IssuedPrivateKey);
+            byte[] seed = Convert.FromBase64String(pwdResponse.IssuedPrivateKey);
             Console.WriteLine($"    Issued seed: {seed.Length} bytes.");
 
             // Leg 2 - key auth using the seed leg 1 just minted. This closes
-            // the loop: the key issued above must now authenticate on its own.
+            // the auth loop independently of the character state: the key must
+            // authenticate on its own, and the server re-applies the same
+            // login→world decision, so this leg's outcome mirrors leg 1's for
+            // the same account.
             Console.WriteLine();
             Console.WriteLine("[2] Key auth with issued seed ...");
 
             if (await KeyAuthAsync(accountId, seed).ConfigureAwait(false)
                     is not { } keyResponse)
                 return;
+
+            if (!ReportAuthLeg(2, keyResponse))
+                return;
+
+            // Legs 3 + 4 require a session token, which is only minted when the
+            // account owns a character (outcome Ok). For a character-less
+            // account the login→world branch has fired correctly and there is
+            // nothing more to test until the character-create handler (channel
+            // 0x02) exists to make one - so this is an expected stop, not a
+            // failure.
+            if (keyResponse.Outcome != AuthOutcome.Ok)
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    "    [3][4] Skipped: account has no character, so no token "
+                    + "was minted.");
+                Console.WriteLine(
+                    "           Login→world branch verified on both auth paths. "
+                    + "Create a");
+                Console.WriteLine(
+                    "           character for this account to exercise legs 3-4.");
+                return;
+            }
 
             // Legs 3 + 4 - UDP auth against Sentinel using the token leg 2
             // issued, followed by the protocol version check that follows
@@ -104,6 +143,35 @@ internal static class Program
         catch (Exception ex)
         {
             Console.WriteLine($"Probe failed: {ex.Message}");
+        }
+    }
+
+    // Reports an auth leg's login→world outcome and returns whether the probe
+    // may continue. None is the loud-failure sentinel: the server never writes
+    // it, so reading it back means a corrupt or uninitialized packet. Ok and
+    // NeedsCharacter are both valid continuations - the caller decides what the
+    // absence of a token means for the legs that follow.
+    private static bool ReportAuthLeg(int leg, AuthResponsePacket response)
+    {
+        switch (response.Outcome)
+        {
+            case AuthOutcome.Ok:
+                Console.WriteLine(
+                    $"    OK    [{leg}] Ok  token={Truncate(response.SessionToken)}"
+                    + $"  udp={response.UdpEndpoint}");
+                return true;
+
+            case AuthOutcome.NeedsCharacter:
+                Console.WriteLine(
+                    $"    OK    [{leg}] NeedsCharacter (no token; create "
+                    + "required).");
+                return true;
+
+            default:
+                Console.WriteLine(
+                    $"    FAIL  [{leg}] Outcome was {response.Outcome}; "
+                    + "expected Ok or NeedsCharacter.");
+                return false;
         }
     }
 
@@ -131,14 +199,7 @@ internal static class Program
         var (typeId, payload) =
             await SendAndReceiveAsync(packet).ConfigureAwait(false);
 
-        AuthResponsePacket? response = InterpretResponse(typeId, payload);
-
-        if (response is { } ok)
-            Console.WriteLine(
-                $"    OK  token={Truncate(ok.SessionToken)}  "
-                + $"udp={ok.UdpEndpoint}");
-
-        return response;
+        return InterpretResponse(typeId, payload);
     }
 
     // Legs 3 and 4: stand up a LiteNetLib client, present the session token
@@ -179,7 +240,9 @@ internal static class Program
             uint typeId = BinaryPrimitives.ReadUInt32BigEndian(data);
 
             var payload = new NetDataReader();
-            // was: payload.SetSource(data, sizeof(uint), data.Length - sizeof(uint));
+            // SetSource maxSize is absolute, not a count from offset:
+            // AvailableBytes = maxSize - position. Pass data.Length, not
+            // data.Length - sizeof(uint), or every read underflows.
             payload.SetSource(data, sizeof(uint), data.Length);
 
             if (typeId == PacketIds.Auth.UdpAuthAck)
@@ -352,7 +415,9 @@ internal static class Program
     }
 
     // Returns the parsed response on success, or null after reporting either a
-    // rejection (DisconnectPacket) or an unexpected packet type.
+    // rejection (DisconnectPacket) or an unexpected packet type. The response's
+    // leading AuthOutcome byte is consumed by AuthResponsePacket.Deserialize;
+    // the caller inspects Outcome to decide how to proceed.
     private static AuthResponsePacket? InterpretResponse(
         uint typeId, byte[] payload)
     {
