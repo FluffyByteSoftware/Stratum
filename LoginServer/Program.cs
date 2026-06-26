@@ -100,7 +100,9 @@ internal static class Program
                 await AccountStore.Instance.ShutdownAsync();
 
             await Scribe.ShutdownAsync();
-            await DiskManager.Instance.ShutdownAsync();
+
+            if(DiskManager.IsRunning)
+                await DiskManager.Instance.ShutdownAsync();
         }
     }
 

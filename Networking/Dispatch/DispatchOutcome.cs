@@ -6,7 +6,7 @@
  *-------------------------------------------------------------
  */
 
-namespace Stratum.Networking.Dispatch;
+namespace Networking.Dispatch;
 
 /// <summary>
 /// Specifies the outcome of a packet dispatch operation.

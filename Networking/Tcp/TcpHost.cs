@@ -7,7 +7,6 @@
  */
 
 using LiteNetLib.Utils;
-using Stratum.Networking.Dispatch;
 using Shared.Networking;
 using System.Buffers;
 using System.Collections.Concurrent;

@@ -7,6 +7,7 @@
  */
 
 using SystemTools.Accounts;
+using SystemTools.Characters;
 using SystemTools.Logger;
 using SystemTools.Storage;
 
@@ -21,6 +22,9 @@ internal static class Program
     {
         DiskManager.Initialize();
         AccountStore.Initialize();
+        CharacterStore.Initialize();
+
+        ReconcileLinks();
 
         try
         {
@@ -34,6 +38,10 @@ internal static class Program
         }
         finally
         {
+            if (CharacterStore.IsRunning)
+                await CharacterStore.Instance.ShutdownAsync()
+                    .ConfigureAwait(false);
+
             if (AccountStore.IsRunning)
                 await AccountStore.Instance.ShutdownAsync().ConfigureAwait(false);
 
@@ -44,6 +52,47 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Runs the account-character reconciler once at startup, after both stores
+    /// have loaded, and surfaces the summary to the operator and the durable log.
+    /// </summary>
+    /// <remarks>
+    /// Core is the system-admin console and the natural place to report link
+    /// health: a clean run is an informational one-liner, while anomalies are
+    /// raised to <see cref="ScribeSeverity.Warn"/> and direct the admin to the log,
+    /// where the reconciler has already written the per-case detail. The reconciler
+    /// runs here, outside any store's <c>Initialize</c>, because it depends on both
+    /// stores being loaded — a dependency a single store cannot satisfy from inside
+    /// its own boot.
+    /// </remarks>
+    private static void ReconcileLinks()
+    {
+        var report = AccountCharacterReconciler.Run();
+
+        if (report.Anomalies == 0)
+        {
+            Console.WriteLine(
+                $"Account-character links reconciled: "
+                    + $"{report.Healthy} healthy, {report.Healed} healed.");
+
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
+                $"Reconcile clean: {report.Healthy} healthy, "
+                    + $"{report.Healed} healed, 0 anomalies."));
+
+            return;
+        }
+
+        Console.WriteLine(
+            $"Account-character reconcile found {report.Anomalies} "
+                + $"anomalies ({report.Healthy} healthy, {report.Healed} "
+                + "healed). See the server log for detail.");
+
+        Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
+            $"Reconcile found {report.Anomalies} anomalies: "
+                + $"{report.Healthy} healthy, {report.Healed} healed. "
+                + "Per-case detail logged above."));
     }
 
     private static async Task RunMenuAsync()
