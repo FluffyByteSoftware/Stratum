@@ -6,54 +6,31 @@
  *-------------------------------------------------------------
  */
 
-using LiteNetLib;
-using LiteNetLib.Utils;
-using Networking.Tcp;
-using Shared.Networking;
 using Shared.Networking.Packets.Auth;
-using Shared.Networking.Packets.Comparable;
-using Shared.Networking.Packets.LifeCycle;
-using System.Buffers.Binary;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Authentication;
-using System.Security.Cryptography.X509Certificates;
-using SystemTools.Security;
 
 namespace Probe;
 
 /// <summary>
-/// Provides a command-line tool for probing Stratum authentication and protocol version checks against a server using
-/// both TCP and UDP connections.
+/// Entry point and orchestrator for the Stratum auth probe. Drives the legs in
+/// order and decides, from each leg's login→world outcome, how far the run
+/// proceeds.
 /// </summary>
-/// <remarks>Executes a multi-leg authentication sequence, including password and key-based authentication,
-/// followed by UDP session and protocol version validation. Intended for local testing and verification of
-/// authentication flows.</remarks>
+/// <remarks>The legs themselves live in <see cref="AuthLegs"/> (password + key
+/// auth), <see cref="CreateLeg"/> (character create), and <see cref="UdpLegs"/>
+/// (UDP session + protocol version), all built on <see cref="ProbeTransport"/>.
+/// This file owns only the sequencing: prompt for credentials, run legs 1-2,
+/// and branch on the outcome - an Ok account already holds a token and proceeds
+/// straight to the UDP legs, while a NeedsCharacter account creates a character,
+/// re-authenticates to mint its token through the single verified path, then
+/// proceeds. The two routes converge on one UDP call with whichever token is in
+/// hand.</remarks>
 internal static class Program
 {
-    private const string ServerHost = "10.0.0.84";
-
-    // MUST match the "Port" in the LoginServer's network.json.
-    private const int ServerPort = 9997;
-
-    // SNI target. With accept-all validation the value only drives the SNI
-    // field and never has to match the dev cert's CN.
-    private const string TargetHost = "Stratum";
-
-    // Sentinel's UDP endpoint for testing. Host matches the TCP target; port
-    // is Sentinel's listener. The advertised UdpEndpoint from the auth
-    // response carries the same value once its placeholder host is real.
-    private const string SentinelHost = "10.0.0.84";
-    private const int SentinelPort = 9998;
-
-    // Bumped from 3 s to accommodate the extra version-check round trips
-    // (challenge → response → result) on top of the auth ack.
-    private static readonly TimeSpan UdpAuthTimeout = TimeSpan.FromSeconds(5);
-
     private static async Task Main()
     {
         Console.WriteLine("Stratum auth probe");
-        Console.WriteLine($"Target: {ServerHost}:{ServerPort}");
+        Console.WriteLine(
+            $"Target: {ProbeTransport.ServerHost}:{ProbeTransport.ServerPort}");
         Console.WriteLine();
 
         Console.Write("Account id [testuser]: ");
@@ -74,11 +51,11 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine("[1] Password auth ...");
 
-            if (await PasswordAuthAsync(accountId, password)
+            if (await AuthLegs.PasswordAuthAsync(accountId, password)
                     .ConfigureAwait(false) is not { } pwdResponse)
                 return;
 
-            if (!ReportAuthLeg(1, pwdResponse))
+            if (!AuthLegs.ReportAuthLeg(1, pwdResponse))
                 return;
 
             if (string.IsNullOrEmpty(pwdResponse.IssuedPrivateKey))
@@ -103,42 +80,72 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine("[2] Key auth with issued seed ...");
 
-            if (await KeyAuthAsync(accountId, seed).ConfigureAwait(false)
-                    is not { } keyResponse)
+            if (await AuthLegs.KeyAuthAsync(accountId, seed)
+                    .ConfigureAwait(false) is not { } keyResponse)
                 return;
 
-            if (!ReportAuthLeg(2, keyResponse))
+            if (!AuthLegs.ReportAuthLeg(2, keyResponse))
                 return;
 
-            // Legs 3 + 4 require a session token, which is only minted when the
-            // account owns a character (outcome Ok). For a character-less
-            // account the login→world branch has fired correctly and there is
-            // nothing more to test until the character-create handler (channel
-            // 0x02) exists to make one - so this is an expected stop, not a
-            // failure.
+            // Leg 5 - character create, only when the account has no character.
+            // An Ok here means a character already exists and the token is in
+            // hand, so create is skipped and the run proceeds straight to the
+            // UDP legs - which is what makes this tool re-runnable.
+            string token = keyResponse.SessionToken;
+
             if (keyResponse.Outcome != AuthOutcome.Ok)
             {
                 Console.WriteLine();
-                Console.WriteLine(
-                    "    [3][4] Skipped: account has no character, so no token "
-                    + "was minted.");
-                Console.WriteLine(
-                    "           Login→world branch verified on both auth paths. "
-                    + "Create a");
-                Console.WriteLine(
-                    "           character for this account to exercise legs 3-4.");
-                return;
+                Console.WriteLine("[5] Character create (NeedsCharacter) ...");
+
+                Console.Write("    Character name: ");
+                string name = ReadLineOrDefault(string.Empty);
+
+                if (string.IsNullOrEmpty(name))
+                {
+                    Console.WriteLine(
+                        "    FAIL  [5] No name entered; cannot create.");
+                    return;
+                }
+
+                if (!await CreateLeg.CreateCharacterAsync(accountId, seed, name)
+                        .ConfigureAwait(false))
+                    return;
+
+                // Created closes the connection clean; the account now owns a
+                // character, so a re-auth lands Ok and mints the token through
+                // the single verified issuance path. Same seed - key auth never
+                // re-mints, so it stays valid across the create round trip.
+                Console.WriteLine();
+                Console.WriteLine("[2b] Re-auth after create ...");
+
+                if (await AuthLegs.KeyAuthAsync(accountId, seed)
+                        .ConfigureAwait(false) is not { } reauthResponse)
+                    return;
+
+                if (!AuthLegs.ReportAuthLeg(2, reauthResponse))
+                    return;
+
+                if (reauthResponse.Outcome != AuthOutcome.Ok)
+                {
+                    Console.WriteLine(
+                        "    FAIL  [2b] Expected Ok after create; got "
+                        + $"{reauthResponse.Outcome}.");
+                    return;
+                }
+
+                token = reauthResponse.SessionToken;
             }
 
-            // Legs 3 + 4 - UDP auth against Sentinel using the token leg 2
-            // issued, followed by the protocol version check that follows
-            // a successful admission. Both run over the same persistent
-            // LiteNetLib connection.
+            // Legs 3 + 4 - UDP auth against Sentinel using the token in hand
+            // (from leg 2, or from the post-create re-auth), followed by the
+            // protocol version check that follows a successful admission. Both
+            // run over the same persistent LiteNetLib connection.
             Console.WriteLine();
-            Console.WriteLine("[3] UDP auth with leg-2 token ...");
+            Console.WriteLine("[3] UDP auth with session token ...");
             Console.WriteLine("[4] Protocol version check ...");
 
-            UdpAuth(keyResponse.SessionToken);
+            UdpLegs.UdpAuth(token);
         }
         catch (Exception ex)
         {
@@ -146,314 +153,11 @@ internal static class Program
         }
     }
 
-    // Reports an auth leg's login→world outcome and returns whether the probe
-    // may continue. None is the loud-failure sentinel: the server never writes
-    // it, so reading it back means a corrupt or uninitialized packet. Ok and
-    // NeedsCharacter are both valid continuations - the caller decides what the
-    // absence of a token means for the legs that follow.
-    private static bool ReportAuthLeg(int leg, AuthResponsePacket response)
-    {
-        switch (response.Outcome)
-        {
-            case AuthOutcome.Ok:
-                Console.WriteLine(
-                    $"    OK    [{leg}] Ok  token={Truncate(response.SessionToken)}"
-                    + $"  udp={response.UdpEndpoint}");
-                return true;
-
-            case AuthOutcome.NeedsCharacter:
-                Console.WriteLine(
-                    $"    OK    [{leg}] NeedsCharacter (no token; create "
-                    + "required).");
-                return true;
-
-            default:
-                Console.WriteLine(
-                    $"    FAIL  [{leg}] Outcome was {response.Outcome}; "
-                    + "expected Ok or NeedsCharacter.");
-                return false;
-        }
-    }
-
-    private static async Task<AuthResponsePacket?> PasswordAuthAsync(
-        string accountId, string password)
-    {
-        var packet = new AuthByPasswordPacket(accountId, password);
-
-        var (typeId, payload) =
-            await SendAndReceiveAsync(packet).ConfigureAwait(false);
-
-        return InterpretResponse(typeId, payload);
-    }
-
-    private static async Task<AuthResponsePacket?> KeyAuthAsync(
-        string accountId, byte[] seed)
-    {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        byte[] signature = SignTimestamp(seed, now);
-
-        // The same timestamp is both signed and sent: the server re-derives
-        // the signed bytes from the packet's UnixTimestampMs field.
-        var packet = new AuthByKeyPacket(accountId, now, signature);
-
-        var (typeId, payload) =
-            await SendAndReceiveAsync(packet).ConfigureAwait(false);
-
-        return InterpretResponse(typeId, payload);
-    }
-
-    // Legs 3 and 4: stand up a LiteNetLib client, present the session token
-    // as connection-request data, wait for Sentinel's auth ack, then handle
-    // the version challenge/response/result exchange over the same connection.
-    private static void UdpAuth(string token)
-    {
-        var listener = new EventBasedNetListener();
-        var client = new NetManager(listener);
-
-        UdpAuthResult authResult = UdpAuthResult.None;
-        VersionResult versionResult = VersionResult.None;
-        bool authAcked = false;
-        bool versionChecked = false;
-        bool disconnected = false;
-
-        listener.PeerConnectedEvent += _ =>
-            Console.WriteLine("    Connected; awaiting UDP auth ack.");
-
-        listener.PeerDisconnectedEvent += (_, info) =>
-        {
-            disconnected = true;
-            Console.WriteLine($"    Disconnected: {info.Reason}.");
-        };
-
-        listener.NetworkReceiveEvent += (peer, reader, _, _) =>
-        {
-            byte[] data = reader.GetRemainingBytes();
-            reader.Recycle();
-
-            if (data.Length < sizeof(uint))
-            {
-                Console.WriteLine(
-                    $"    Packet too short ({data.Length} bytes); dropping.");
-                return;
-            }
-
-            uint typeId = BinaryPrimitives.ReadUInt32BigEndian(data);
-
-            var payload = new NetDataReader();
-            // SetSource maxSize is absolute, not a count from offset:
-            // AvailableBytes = maxSize - position. Pass data.Length, not
-            // data.Length - sizeof(uint), or every read underflows.
-            payload.SetSource(data, sizeof(uint), data.Length);
-
-            if (typeId == PacketIds.Auth.UdpAuthAck)
-            {
-                if (payload.AvailableBytes < 1)
-                {
-                    Console.WriteLine("    Auth ack payload too short; dropping.");
-                    return;
-                }
-                authResult = (UdpAuthResult)payload.GetByte();
-                authAcked = true;
-                return;
-            }
-
-            if (typeId == PacketIds.Auth.VersionChallenge)
-            {
-                string serverVersion = payload.GetString();
-                Console.WriteLine(
-                    $"    Version challenge: server={serverVersion}; " +
-                    $"responding with client={GameProtocolVersion.Current}.");
-
-                SendUdpPacket(peer, new VersionResponsePacket
-                {
-                    Version = GameProtocolVersion.Current,
-                });
-                return;
-            }
-
-            if (typeId == PacketIds.Auth.VersionResult)
-            {
-                if (payload.AvailableBytes < 1)
-                {
-                    Console.WriteLine(
-                        "    Version result payload too short; dropping.");
-                    return;
-                }
-                versionResult = (VersionResult)payload.GetByte();
-                versionChecked = true;
-                return;
-            }
-
-            Console.WriteLine(
-                $"    Unexpected type 0x{typeId:X8}; dropping.");
-        };
-
-        client.Start();
-        client.Connect(SentinelHost, SentinelPort, token);
-
-        var deadline = DateTime.UtcNow + UdpAuthTimeout;
-
-        while (!versionChecked && !disconnected && DateTime.UtcNow < deadline)
-        {
-            client.PollEvents();
-            Thread.Sleep(15);
-        }
-
-        client.Stop();
-
-        // Leg 3 report
-        if (!authAcked)
-        {
-            Console.WriteLine(
-                "    FAIL  [3] No UDP auth ack (rejected or timed out).");
-            return;
-        }
-
-        if (authResult != UdpAuthResult.Authenticated)
-        {
-            Console.WriteLine($"    FAIL  [3] Auth result was {authResult}.");
-            return;
-        }
-
-        Console.WriteLine("    OK    [3] UDP session authenticated.");
-
-        // Leg 4 report
-        if (!versionChecked)
-        {
-            Console.WriteLine(
-                "    FAIL  [4] No version result received (timed out).");
-            return;
-        }
-
-        if (versionResult == VersionResult.Ok)
-            Console.WriteLine("    OK    [4] Protocol version accepted.");
-        else
-            Console.WriteLine(
-                $"    FAIL  [4] Version result was {versionResult}.");
-    }
-
-    // Serializes and sends a single UDP packet to a peer with the 4-byte
-    // big-endian type header. Mirrors UdpHost.Send but uses a heap-allocated
-    // header array because stackalloc is unavailable inside lambda closures.
-    private static void SendUdpPacket<T>(NetPeer peer, T packet)
-        where T : struct, IPacketWritable
-    {
-        var writer = new NetDataWriter();
-
-        byte[] typeHeader = new byte[sizeof(uint)];
-        BinaryPrimitives.WriteUInt32BigEndian(typeHeader, packet.TypeId);
-        writer.Put(typeHeader);
-
-        packet.Serialize(writer);
-
-        peer.Send(writer, 0, DeliveryMethod.ReliableOrdered);
-    }
-
-    // Sync helper: stackalloc is illegal in an async method, and the signed
-    // message is the 8-byte big-endian timestamp the server verifies against.
-    private static byte[] SignTimestamp(byte[] seed, long unixTimestampMs)
-    {
-        Span<byte> message = stackalloc byte[sizeof(long)];
-        BinaryPrimitives.WriteInt64BigEndian(message, unixTimestampMs);
-
-        return Ed25519MessageSigner.Sign(seed, message);
-    }
-
-    // Opens a fresh TLS connection, performs the client handshake, sends one
-    // framed packet, and reads exactly one framed response. The server closes
-    // after every auth attempt, so each leg is its own connection.
-    private static async Task<(uint typeId, byte[] payload)>
-        SendAndReceiveAsync<T>(T packet)
-        where T : struct, IPacketWritable
-    {
-        using var tcp = new TcpClient();
-        await tcp.ConnectAsync(ServerHost, ServerPort).ConfigureAwait(false);
-
-        using var ssl = new SslStream(
-            tcp.GetStream(),
-            leaveInnerStreamOpen: false,
-            userCertificateValidationCallback: AcceptAnyServerCertificate);
-
-        var sslOptions = new SslClientAuthenticationOptions
-        {
-            TargetHost = TargetHost,
-            EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-        };
-
-        await ssl.AuthenticateAsClientAsync(sslOptions).ConfigureAwait(false);
-
-        // Frame and send the request, mirroring TcpHost.SendAsync.
-        var writer = new NetDataWriter();
-        packet.Serialize(writer);
-
-        int payloadLength = writer.Length;
-        int frameSize = PacketFramer.FrameSize(payloadLength);
-        byte[] frame = new byte[frameSize];
-
-        PacketFramer.WriteFrame(
-            packet.TypeId, writer.Data.AsSpan(0, payloadLength), frame);
-
-        await ssl.WriteAsync(frame.AsMemory(0, frameSize)).ConfigureAwait(false);
-        await ssl.FlushAsync().ConfigureAwait(false);
-
-        // Read the single response frame: 8-byte header, then payload.
-        byte[] header = new byte[PacketFramer.HeaderSize];
-        await ssl.ReadExactlyAsync(header.AsMemory()).ConfigureAwait(false);
-
-        if (!PacketFramer.TryReadHeader(
-                header, out uint typeId, out int responseLength))
-            throw new InvalidOperationException(
-                "Malformed response header from server.");
-
-        byte[] payload = new byte[responseLength];
-
-        if (responseLength > 0)
-            await ssl.ReadExactlyAsync(payload.AsMemory())
-                .ConfigureAwait(false);
-
-        return (typeId, payload);
-    }
-
-    // Returns the parsed response on success, or null after reporting either a
-    // rejection (DisconnectPacket) or an unexpected packet type. The response's
-    // leading AuthOutcome byte is consumed by AuthResponsePacket.Deserialize;
-    // the caller inspects Outcome to decide how to proceed.
-    private static AuthResponsePacket? InterpretResponse(
-        uint typeId, byte[] payload)
-    {
-        var reader = new NetDataReader();
-        reader.SetSource(payload, 0, payload.Length);
-
-        if (typeId == AuthResponsePacket.TypeId)
-            return AuthResponsePacket.Deserialize(reader);
-
-        if (typeId == DisconnectPacket.TypeId)
-        {
-            DisconnectPacket disconnect = DisconnectPacket.Deserialize(reader);
-            Console.WriteLine($"    REJECTED: {disconnect.Reason}");
-            return null;
-        }
-
-        Console.WriteLine($"    Unexpected response type 0x{typeId:X8}.");
-        return null;
-    }
-
-    // Loopback probe against a self-signed dev certificate: trust is
-    // unconditional here. The real client must validate or pin instead.
-    private static bool AcceptAnyServerCertificate(
-        object sender,
-        X509Certificate? certificate,
-        X509Chain? chain,
-        SslPolicyErrors errors) => true;
-
     private static string ReadLineOrDefault(string fallback)
     {
         string? line = Console.ReadLine();
         return string.IsNullOrWhiteSpace(line) ? fallback : line.Trim();
     }
-
-    private static string Truncate(string value) =>
-        value.Length <= 12 ? value : value[..12] + "...";
 }
 
 /*
