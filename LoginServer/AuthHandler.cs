@@ -14,7 +14,7 @@ using SystemTools.Security;
 using System;
 using System.Buffers.Binary;
 using System.Threading.Tasks;
-using Stratum.Shared.Networking;
+using Shared.Networking;
 
 namespace LoginServer;
 
@@ -31,7 +31,11 @@ namespace LoginServer;
 /// <see cref="AuthOutcome.NeedsCharacter"/> and no token, so a token always implies a
 /// playable character downstream at Sentinel. This read happens here, in LoginServer,
 /// because LoginServer holds the account after TLS auth and before the token is minted,
-/// and because Sentinel is pure transport with no account knowledge.
+/// and because Sentinel is pure transport with no account knowledge. A
+/// <see cref="AuthOutcome.NeedsCharacter"/> connection is registered in the supplied
+/// <see cref="CharacterLoginRegistry"/> and left open so the character-create packet
+/// can arrive on it; the <see cref="AuthOutcome.Ok"/> path is unchanged and still
+/// tears its connection down after responding.
 /// </remarks>
 /// <param name="accounts">The account store for retrieving and updating account 
 /// records.</param>
@@ -39,10 +43,14 @@ namespace LoginServer;
 /// and managing lockout status.</param>
 /// <param name="udpEndpoint">The UDP endpoint provided to authenticated clients 
 /// for subsequent communication.</param>
+/// <param name="characterLogins">Registry binding a character-less authenticated
+/// connection to its account, so the create handler can resolve the owning account
+/// from the connection rather than from the untrusted create packet.</param>
 public sealed class AuthHandler(
     AccountStore accounts,
     LockoutTracker lockout,
-    string udpEndpoint)
+    string udpEndpoint,
+    CharacterLoginRegistry characterLogins)
 {
     private const long MaxClockSkewMs = 30_000;
     private const int KeyLifetimeDays = 3;
@@ -213,15 +221,17 @@ public sealed class AuthHandler(
     /// account keeps the key it was just granted and can authenticate by key on the
     /// subsequent character-creation round-trip. A populated name yields
     /// <see cref="AuthOutcome.Ok"/> with a freshly issued token and the UDP endpoint.
-    /// The send-then-disconnect behaviour of <see cref="SendResponseAsync"/> is
-    /// unchanged for both outcomes; the character-creation round-trip that follows a
-    /// <see cref="AuthOutcome.NeedsCharacter"/> response is a separate, player-driven
-    /// exchange on the character channel, not this handler's concern.
+    /// The <see cref="AuthOutcome.Ok"/> path sends then disconnects as before; the
+    /// <see cref="AuthOutcome.NeedsCharacter"/> path registers the connection in the
+    /// <see cref="CharacterLoginRegistry"/> and leaves it open for the character-
+    /// creation round-trip that follows — a separate player-driven exchange on the
+    /// character channel handled elsewhere.
     /// </remarks>
     private async ValueTask BuildAuthOutcomeAsync(
         TcpConnection conn, AccountRecord record, string issuedPrivateKey)
     {
         AuthResponsePacket response;
+        bool disconnectAfter;
 
         if (string.IsNullOrEmpty(record.CharacterName))
         {
@@ -229,8 +239,14 @@ public sealed class AuthHandler(
                 $"Account '{record.Id}' authenticated with no character; "
                 + $"signalling create from {conn.RemoteEndPoint}."));
 
+            characterLogins.TryRegister(conn.Id, record.Id);
+
             response = new AuthResponsePacket(
                 AuthOutcome.NeedsCharacter, "", "", issuedPrivateKey);
+
+            // Leave the connection open: the character-create packet arrives on
+            // it, and the create handler tears it down when the attempt resolves.
+            disconnectAfter = false;
         }
         else
         {
@@ -238,19 +254,24 @@ public sealed class AuthHandler(
 
             response = new AuthResponsePacket(
                 AuthOutcome.Ok, token, udpEndpoint, issuedPrivateKey);
+
+            disconnectAfter = true;
         }
 
-        await SendResponseAsync(conn, response).ConfigureAwait(false);
+        await SendResponseAsync(conn, response, disconnectAfter)
+            .ConfigureAwait(false);
     }
 
     private async ValueTask SendResponseAsync(
-        TcpConnection conn, AuthResponsePacket response)
+        TcpConnection conn, AuthResponsePacket response, bool disconnectAfter)
     {
         var host = Host ??
             throw new InvalidOperationException("Host not assigned.");
 
         await host.SendAsync(conn, response).ConfigureAwait(false);
-        conn.RequestDisconnect(SecureDisconnectReason.None);
+
+        if (disconnectAfter)
+            conn.RequestDisconnect(SecureDisconnectReason.None);
     }
 
     private static bool VerifySignature(

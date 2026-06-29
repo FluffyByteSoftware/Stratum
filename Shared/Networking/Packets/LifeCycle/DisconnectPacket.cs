@@ -8,7 +8,7 @@
 
 using System;
 using LiteNetLib.Utils;
-using Stratum.Shared.Networking;
+using Shared.Networking;
 
 namespace Shared.Networking.Packets.LifeCycle
 {

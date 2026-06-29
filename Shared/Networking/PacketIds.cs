@@ -76,6 +76,23 @@ namespace Shared.Networking
             /// </summary>
             public const uint Pong              = 0x01_00_00_02;
         }
+
+        /// <summary>
+        /// Provides constants for character-related request and response identifiers.
+        /// </summary>
+        public static class Character
+        {
+            /// <summary>
+            /// Represents the message identifier for a character creation request.
+            /// </summary>
+            public const uint CharacterCreateRequest    = 0x02_00_00_01;
+
+            /// <summary>
+            /// Represents the response code for character creation.
+            /// </summary>
+            public const uint CharacterCreateResponse   = 0x02_00_00_02;
+        }
+
     }
 }
 

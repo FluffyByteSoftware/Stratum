@@ -9,6 +9,7 @@
 using System;
 using Networking.Dispatch;
 using SystemTools.Accounts;
+using SystemTools.Characters;
 using SystemTools.Config;
 using SystemTools.Logger;
 using SystemTools.Security;
@@ -16,6 +17,7 @@ using SystemTools.Storage;
 using System.Net;
 using System.Threading.Tasks;
 using Shared.Networking.Packets.Auth;
+using Shared.Networking.Packets.Character;
 using Networking.Tcp;
 using SystemTools;
 
@@ -46,16 +48,21 @@ internal static class Program
             var certificate = CertificateProvider.LoadOrCreate(Constellations.CertificatePath);
 
             AccountStore.Initialize();
+            CharacterStore.Initialize();
 
             var signingKey = SessionKeyProvider.LoadOrCreate();
             SessionTokenIssuer.Initialize(signingKey);
 
             var lockout = new LoginServer.LockoutTracker();
-            var udpHost = string.Concat(networkConfig.UdpAddress, ":", 
+            var udpHost = string.Concat(networkConfig.UdpAddress, ":",
                 networkConfig.UdpPort.ToString());
 
+            var characterLogins = new CharacterLoginRegistry();
+
             var handlers = new AuthHandler(
-                AccountStore.Instance, lockout, udpHost);
+                AccountStore.Instance, lockout, udpHost, characterLogins);
+
+            var createHandler = new CharacterCreateHandler(characterLogins);
 
             var dispatcher = new PacketDispatcher<TcpConnection>();
             dispatcher.Register<AuthByKeyPacket>(
@@ -68,15 +75,21 @@ internal static class Program
                 AuthByPasswordPacket.Deserialize,
                 handlers.OnAuthByPassword);
 
+            dispatcher.Register<CharacterCreateRequestPacket>(
+                CharacterCreateRequestPacket.TypeId,
+                CharacterCreateRequestPacket.Deserialize,
+                createHandler.OnCharacterCreate);
+
             dispatcher.Freeze();
 
-            bindAddress ??= IPAddress.Loopback;
+            bindAddress ??= IPAddress.Any;
 
             host = new TcpHost(
                 bindAddress, networkConfig.Port, dispatcher, certificate);
 
             // Close the Host null-window before a connection arrives
             handlers.Host = host;
+            createHandler.Host = host;
 
             host.Start();
 
@@ -86,7 +99,7 @@ internal static class Program
 
             await WaitForShutdownAsync();
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
                 "LoginServer terminated by an unhandled exception.", ex));
@@ -96,12 +109,15 @@ internal static class Program
             if (host is not null)
                 await host.StopAsync();
 
+            if (CharacterStore.IsRunning)
+                await CharacterStore.Instance.ShutdownAsync();
+
             if (AccountStore.IsRunning)
                 await AccountStore.Instance.ShutdownAsync();
 
             await Scribe.ShutdownAsync();
 
-            if(DiskManager.IsRunning)
+            if (DiskManager.IsRunning)
                 await DiskManager.Instance.ShutdownAsync();
         }
     }

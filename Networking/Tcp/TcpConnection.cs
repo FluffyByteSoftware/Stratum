@@ -10,7 +10,7 @@ using System;
 using System.IO;
 using System.Net.Sockets;
 using System.Threading;
-using Stratum.Shared.Networking;
+using Shared.Networking;
 
 
 namespace Networking.Tcp;

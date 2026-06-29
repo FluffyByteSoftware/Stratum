@@ -6,7 +6,7 @@
  *-------------------------------------------------------------
  */
 
-namespace Stratum.Shared.Networking
+namespace Shared.Networking
 {
     /// <summary>
     /// Represents the reason for a secure disconnect operation.
@@ -52,7 +52,13 @@ namespace Stratum.Shared.Networking
         /// <summary>
         /// This is used to keep the session alive.
         /// </summary>
-        KeepAliveTimeout = 0x09
+        KeepAliveTimeout = 0x09,
+
+        /// <summary>
+        /// The character creation failed.
+        /// </summary>
+        CharacterCreateFailed = 0x0A,
+
     }
 }
 
