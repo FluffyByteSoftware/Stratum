@@ -86,6 +86,35 @@ public sealed class TcpHost
     }
 
     /// <summary>
+    /// Invoked once per established connection after it has been fully torn down,
+    /// carrying that connection's <see cref="TcpConnection.Id"/> so a process-level
+    /// owner can drop any per-connection bookkeeping keyed by that id.
+    /// </summary>
+    /// <remarks>
+    /// This is the teardown seam the LoginServer process uses to clean up its
+    /// <c>CharacterLoginRegistry</c> when a connection held open after a
+    /// <c>NeedsCharacter</c> outcome is abandoned — the client drops without creating,
+    /// or drops after a retryable name rejection — since nothing else calls
+    /// <c>Remove</c> on an unexpected drop. The host stays ignorant of which
+    /// connections a subscriber tracks: it announces <i>every</i> established teardown,
+    /// and a registry's <c>Remove</c> is a harmless no-op on a connection it never
+    /// tracked (an <c>Ok</c>-and-disconnected connection, say). Over-firing therefore
+    /// costs nothing and under-firing cannot happen — any connection that reached the
+    /// read loop passes through the same teardown.
+    /// <para>
+    /// A single settable callback rather than an <c>event</c> because there is exactly
+    /// one subscriber and no need for multicast subscribe/unsubscribe; promoting it to
+    /// an event is a mechanical change if a second consumer ever appears. It is set
+    /// once at wiring time before <see cref="Start"/> and only read on handler threads
+    /// thereafter, mirroring the set-before-traffic discipline of the dispatcher; the
+    /// reference assignment is atomic, so no further synchronization is required. The
+    /// host invokes it inside a guarded block (see <see cref="NotifyConnectionClosed"/>)
+    /// so a throwing subscriber cannot break connection teardown.
+    /// </para>
+    /// </remarks>
+    public Action<long>? ConnectionClosed { get; set; }
+
+    /// <summary>
     /// Starts the TCP host and begins listening for incoming connections.
     /// </summary>
     /// <exception cref="InvalidOperationException">Thrown when the host is
@@ -100,7 +129,7 @@ public sealed class TcpHost
         _acceptLoop = AcceptLoopAsync();
 
         string tls = _certificate is not null ? " (TLS)" : "";
-        
+
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
             $"Tcp Host listening on {_bindAddress}, port: {_port}{tls}."));
     }
@@ -114,12 +143,12 @@ public sealed class TcpHost
     /// <returns>A task that represents the asynchronous stop operation.</returns>
     public async Task StopAsync()
     {
-        if(Interlocked.Exchange(ref _stopped, 1) != 0)
+        if (Interlocked.Exchange(ref _stopped, 1) != 0)
             return;
 
         _shutdownCts.Cancel();
 
-        if(_acceptLoop is not null)
+        if (_acceptLoop is not null)
         {
             try
             {
@@ -142,7 +171,7 @@ public sealed class TcpHost
 
         Task[] inflight = [.. _handlers.Values];
 
-        if(inflight.Length > 0)
+        if (inflight.Length > 0)
         {
             try
             {
@@ -165,7 +194,7 @@ public sealed class TcpHost
     public async ValueTask<bool> SendAsync<T>(
 #pragma warning restore CA1822 // Mark members as static
         TcpConnection connection, T packet)
-        where T: struct, IPacketWritable
+        where T : struct, IPacketWritable
     {
         var writer = new NetDataWriter();
         packet.Serialize(writer);
@@ -194,7 +223,7 @@ public sealed class TcpHost
 
             return true;
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
                 $"Send to {connection.RemoteEndPoint} failed: {ex.Message}", ex));
@@ -223,15 +252,15 @@ public sealed class TcpHost
             }
             catch (OperationCanceledException) { break; }
             catch (ObjectDisposedException) { break; }
-            catch(SocketException ex)
+            catch (SocketException ex)
             {
-                Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn, 
+                Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
                     $"Accept failed: {ex.Message}", ex));
                 continue;
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
-                Scribe.Pump(new ScribeMessage(ScribeSeverity.Error, 
+                Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
                     $"Accept loop error: {ex.Message}", ex));
                 continue;
             }
@@ -240,7 +269,7 @@ public sealed class TcpHost
             _handlers[id] = TrackedHandleAsync(client, id);
         }
     }
-    
+
     private async Task TrackedHandleAsync(TcpClient client, long id)
     {
         // Yield first so the task is registered in _handlers first.
@@ -268,7 +297,7 @@ public sealed class TcpHost
             networkStream = client.GetStream();
             Stream activeStream = networkStream;
 
-            if(_certificate is not null)
+            if (_certificate is not null)
             {
                 ssl = new SslStream(networkStream, leaveInnerStreamOpen: false);
 
@@ -280,7 +309,7 @@ public sealed class TcpHost
                 {
                     ServerCertificate = _certificate,
                     ClientCertificateRequired = false,
-                    EnabledSslProtocols = 
+                    EnabledSslProtocols =
                     System.Security.Authentication.SslProtocols.Tls12 |
                     System.Security.Authentication.SslProtocols.Tls13,
                 };
@@ -293,9 +322,9 @@ public sealed class TcpHost
             conn = new TcpConnection(id, client, activeStream, remote);
             await ReadLoopAsync(conn).ConfigureAwait(false);
         }
-        catch(OperationCanceledException) when 
+        catch (OperationCanceledException) when
             (_shutdownToken.IsCancellationRequested)
-        {             
+        {
             // Host is shutting down, ignore.
         }
         catch (Exception ex)
@@ -306,7 +335,15 @@ public sealed class TcpHost
         finally
         {
             if (conn is not null)
+            {
                 conn.Close();
+
+                // Fire after Close so the connection is fully torn down before a
+                // subscriber drops its reference. Established connections all funnel
+                // here regardless of how they ended; the conn-null branch below is a
+                // pre-read-loop failure that was never registered, so it fires nothing.
+                NotifyConnectionClosed(conn.Id);
+            }
             else
             {
                 try
@@ -319,6 +356,31 @@ public sealed class TcpHost
             }
         }
     }
+
+    private void NotifyConnectionClosed(long id)
+    {
+        // Snapshot the callback so a concurrent reassignment can't tear the
+        // null-check from the invoke. Belt-and-suspenders given the set-once
+        // discipline, but the invoke is on a handler thread, so cheap insurance.
+        Action<long>? handler = ConnectionClosed;
+
+        if (handler is null)
+            return;
+
+        try
+        {
+            handler(id);
+        }
+        catch (Exception ex)
+        {
+            // A throwing subscriber must not break teardown: this runs inside the
+            // connection-handler finally, so an escape would orphan the cleanup.
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
+                $"ConnectionClosed callback threw for connection {id}: " +
+                $"{ex.Message}", ex));
+        }
+    }
+
     private async Task ReadLoopAsync(TcpConnection conn)
     {
         byte[] header = new byte[PacketFramer.HeaderSize];
@@ -384,7 +446,7 @@ public sealed class TcpHost
         {
             using var readCts =
                 CancellationTokenSource.CreateLinkedTokenSource(_shutdownToken);
-            
+
             readCts.CancelAfter(ReadTimeout);
 
             await stream.ReadExactlyAsync(buffer, readCts.Token)
@@ -394,7 +456,7 @@ public sealed class TcpHost
         }
         catch (EndOfStreamException)
         {
-            Scribe.Pump(new ScribeMessage(ScribeSeverity.Debug, 
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Debug,
                 $"Connection {conn.Id} closed by peer."));
             return ReadAction.ReturnNow;
         }
@@ -402,7 +464,7 @@ public sealed class TcpHost
             when (_shutdownToken.IsCancellationRequested)
         {
             conn.RequestDisconnect(SecureDisconnectReason.ServerShuttingDown);
-            
+
             return ReadAction.BreakToTeardown;
         }
         catch (OperationCanceledException)
@@ -410,7 +472,7 @@ public sealed class TcpHost
             conn.RequestDisconnect(SecureDisconnectReason.Timeout);
             return ReadAction.BreakToTeardown;
         }
-        catch(IOException ex)
+        catch (IOException ex)
         {
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
                 $"Network error reading from {conn.RemoteEndPoint}: " +
@@ -437,7 +499,7 @@ public sealed class TcpHost
             case DispatchOutcome.InvalidPacket:
                 Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
                     $"Invalid packet 0x{result.TypeId:X8} " +
-                    $"from {conn.RemoteEndPoint}: {result.Exception?.Message}", 
+                    $"from {conn.RemoteEndPoint}: {result.Exception?.Message}",
                     result.Exception));
 
                 conn.RequestDisconnect(SecureDisconnectReason.MalformedPacket);
@@ -455,8 +517,8 @@ public sealed class TcpHost
     private async ValueTask SendDisconnectIfNeededAsync(TcpConnection conn)
     {
         SecureDisconnectReason reason = conn.DisconnectReason;
-        
-        if(reason != SecureDisconnectReason.None)
+
+        if (reason != SecureDisconnectReason.None)
             await SendAsync(conn, new DisconnectPacket(reason))
                 .ConfigureAwait(false);
     }

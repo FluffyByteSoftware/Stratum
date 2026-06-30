@@ -91,6 +91,11 @@ internal static class Program
             handlers.Host = host;
             createHandler.Host = host;
 
+            // Clean up an abandoned NeedsCharacter entry when its connection drops
+            // without resolving: the host fires this on every established teardown,
+            // and Remove is a harmless no-op for connections never registered.
+            host.ConnectionClosed = id => characterLogins.Remove(id);
+
             host.Start();
 
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
