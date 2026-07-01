@@ -1,5 +1,5 @@
 /*
- * (PacketIds.cs)
+ * (MessagePacketIds.cs)
  *------------------------------------------------------------
  * Created - 5/23/2026 10:47:17 AM
  * Created by - Seliris
@@ -13,12 +13,12 @@ namespace Shared.Networking;
 /// organized by functional category.
 /// </summary>
 
-public static class PacketIds
+public static class MessagePacketIds
 {
     /// <summary>
     /// Defines constants for authentication protocol packets.
     /// </summary>
-    public static class Auth
+    public static class AuthMessage
     {
         /// <summary>
         /// Packet Id for Authentication packet by key
@@ -65,7 +65,7 @@ public static class PacketIds
     /// <summary>
     /// Defines lifecycle message type constants for ping and pong operations.
     /// </summary>
-    public static class LifeCycle
+    public static class LifeCycleMessage
     {
         /// <summary>
         /// Packet Id for sending a ping request.
@@ -80,7 +80,7 @@ public static class PacketIds
     /// <summary>
     /// Provides constants for character-related request and response identifiers.
     /// </summary>
-    public static class Character
+    public static class CharacterMessage
     {
         /// <summary>
         /// Represents the message identifier for a character creation request.
@@ -93,12 +93,49 @@ public static class PacketIds
         public const uint CharacterCreateResponse   = 0x02_00_00_02;
     }
 
+    /// <summary>
+    /// Provides constants for world persistence and loading.
+    /// </summary>
+    public static class ZoneDataMessage
+    {
+        /// <summary>
+        /// Identifies the zone load data request from the client.
+        /// </summary>
+        public const uint ZoneDataRequest   = 0x03_00_00_01;
+
+        /// <summary>
+        /// Identifies the Zone Data Response message type from the server.
+        /// This will carry the payload with where all objects inside the zone are currently located,
+        /// their current rotation, and their current state.
+        /// May need to refine further down into a LocalToPlayerDataRequest to avoid pulling information 
+        /// about the entire zone, when the player only needs their immediate surroundings.
+        /// </summary>
+        public const uint ZoneDataResponse  = 0x03_00_00_02;
+
+        /// <summary>
+        /// Client is requesting to spawn in this zone at these coordinates.
+        /// </summary>
+        public const uint ZoneSpawnRequest  = 0x03_00_00_03;
+        /// <summary>
+        /// Server response to the client request to spawn at X,Y,Z coordinates rotated at X,Y,Z.
+        /// </summary>
+        public const uint ZoneSpawnResponse = 0x03_00_00_04;
+        /// <summary>
+        /// Client is requesting to exit the zone at these coordinates.
+        /// </summary>
+        public const uint ZoneExitRequest   = 0x03_00_00_05;
+        /// <summary>
+        /// Server is approving or denying the client's exit.
+        /// </summary>
+        public const uint ZoneExitResponse  = 0x03_00_00_06;
+    }   
+    
 }
 
 
 /*
 *------------------------------------------------------------
-* (PacketIds.cs)
+* (MessagePacketIds.cs)
 * See License.txt for licensing information.
 *-----------------------------------------------------------
 */

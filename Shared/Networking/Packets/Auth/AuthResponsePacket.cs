@@ -44,7 +44,7 @@ public readonly struct AuthResponsePacket(
     string udpEndpoint,
     string issuedPrivateKey) : IPacketWritable
 {
-    public const uint TypeId = PacketIds.Auth.AuthResponse;
+    public const uint TypeId = MessagePacketIds.AuthMessage.AuthResponse;
 
     /// <summary>
     /// The login→world outcome. The client switches on this before reading the

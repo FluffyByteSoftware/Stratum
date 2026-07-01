@@ -18,7 +18,7 @@ namespace Shared.Networking.Packets.Auth;
 /// <param name="password">The password.</param>
 public readonly struct AuthByPasswordPacket(string accountId, string password) : IPacketWritable
 {
-    public const uint TypeId = PacketIds.Auth.AuthByPassword;
+    public const uint TypeId = MessagePacketIds.AuthMessage.AuthByPassword;
 
     /// <summary>
     /// The account ID of the packet.

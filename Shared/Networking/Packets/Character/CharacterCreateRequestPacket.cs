@@ -24,7 +24,7 @@ public readonly struct CharacterCreateRequestPacket(string requestedName) : IPac
     /// <summary>
     /// Unique identifier for the CharacterCreateRequest packet type.
     /// </summary>
-    public const uint TypeId = PacketIds.Character.CharacterCreateRequest;
+    public const uint TypeId = MessagePacketIds.CharacterMessage.CharacterCreateRequest;
 
     /// <summary>
     /// Gets the requested name associated with the operation.

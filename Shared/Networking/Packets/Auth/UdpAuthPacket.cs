@@ -48,7 +48,7 @@ public struct UdpAuthPacket : IPacketWritable
     /// UdpAuthPacket's TypeId.
     /// UdpAuthAck
     /// </summary>
-    public readonly uint TypeId => PacketIds.Auth.UdpAuthAck;
+    public readonly uint TypeId => MessagePacketIds.AuthMessage.UdpAuthAck;
 
     /// <summary>
     /// Serialize the data.

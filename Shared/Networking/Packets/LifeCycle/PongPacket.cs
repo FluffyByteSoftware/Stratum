@@ -23,7 +23,7 @@ public readonly struct PongPacket(long echoedTimestampMs) : IPacketWritable
     /// <summary>
     /// The type identifier for the Pong packet.
     /// </summary>
-    public const uint TypeId = PacketIds.LifeCycle.Pong;
+    public const uint TypeId = MessagePacketIds.LifeCycleMessage.Pong;
 
     public long EchoedTimestampMs { get; } = echoedTimestampMs;
 

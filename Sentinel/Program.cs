@@ -50,7 +50,7 @@ internal static class Program
             SessionTokenIssuer.Initialize(signingKey);
 
             _dispatcher.Register(
-                            PacketIds.Auth.VersionResponse,
+                            MessagePacketIds.AuthMessage.VersionResponse,
                             static reader =>
                             {
                                 var p = new VersionResponsePacket();
@@ -60,7 +60,7 @@ internal static class Program
                             OnVersionResponse);
 
             _dispatcher.Register(
-                PacketIds.LifeCycle.Ping,
+                MessagePacketIds.LifeCycleMessage.Ping,
                 PingPacket.Deserialize,
                 KeepAliveHandler.OnPing);
 

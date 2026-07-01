@@ -104,7 +104,7 @@ public readonly struct CharacterCreateResponsePacket(CharacterCreateOutcome outc
     /// <summary>
     /// The packet type id on the character channel.
     /// </summary>
-    public const uint TypeId = PacketIds.Character.CharacterCreateResponse;
+    public const uint TypeId = MessagePacketIds.CharacterMessage.CharacterCreateResponse;
 
     /// <summary>
     /// The outcome of the create attempt the client switches on.

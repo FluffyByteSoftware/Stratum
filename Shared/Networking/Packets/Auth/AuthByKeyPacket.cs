@@ -26,7 +26,7 @@ public readonly struct AuthByKeyPacket(
     /// <summary>
     /// Expected type id of the packet type.
     /// </summary>
-    public const uint TypeId = PacketIds.Auth.AuthByKey;
+    public const uint TypeId = MessagePacketIds.AuthMessage.AuthByKey;
 
     /// <summary>
     /// The expected length of a signature in bytes.

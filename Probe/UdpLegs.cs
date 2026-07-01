@@ -97,7 +97,7 @@ internal static class UdpLegs
             // data.Length - sizeof(uint), or every read underflows.
             payload.SetSource(data, sizeof(uint), data.Length);
 
-            if (typeId == PacketIds.Auth.UdpAuthAck)
+            if (typeId == MessagePacketIds.AuthMessage.UdpAuthAck)
             {
                 if (payload.AvailableBytes < 1)
                 {
@@ -109,7 +109,7 @@ internal static class UdpLegs
                 return;
             }
 
-            if (typeId == PacketIds.Auth.VersionChallenge)
+            if (typeId == MessagePacketIds.AuthMessage.VersionChallenge)
             {
                 string serverVersion = payload.GetString();
                 Console.WriteLine(
@@ -123,7 +123,7 @@ internal static class UdpLegs
                 return;
             }
 
-            if (typeId == PacketIds.Auth.VersionResult)
+            if (typeId == MessagePacketIds.AuthMessage.VersionResult)
             {
                 if (payload.AvailableBytes < 1)
                 {
@@ -153,7 +153,7 @@ internal static class UdpLegs
                 return;
             }
 
-            if (typeId == PacketIds.LifeCycle.Pong)
+            if (typeId == MessagePacketIds.LifeCycleMessage.Pong)
             {
                 if (payload.AvailableBytes < sizeof(long))
                 {

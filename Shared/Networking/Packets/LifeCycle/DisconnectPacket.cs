@@ -22,7 +22,7 @@ namespace Shared.Networking.Packets.LifeCycle;
 /// <param name="reason">The disconnect reason.</param>
 public readonly struct DisconnectPacket(SecureDisconnectReason reason) : IPacketWritable
 {
-    public const uint TypeId = PacketIds.Auth.Disconnect;
+    public const uint TypeId = MessagePacketIds.AuthMessage.Disconnect;
 
     /// <summary>
     /// The reason for the disconnect request.

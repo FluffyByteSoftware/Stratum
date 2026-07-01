@@ -13,7 +13,7 @@ namespace Shared.Networking.Packets.LifeCycle;
 
 public readonly struct PingPacket(long senderTimestampMs) : IPacketWritable
 {
-    public const uint TypeId = PacketIds.LifeCycle.Ping;
+    public const uint TypeId = MessagePacketIds.LifeCycleMessage.Ping;
 
     public long SenderTimestampMs { get; } = senderTimestampMs;
 

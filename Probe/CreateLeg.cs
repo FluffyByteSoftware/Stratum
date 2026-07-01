@@ -62,7 +62,7 @@ internal static class CreateLeg
 
         await ssl.AuthenticateAsClientAsync(sslOptions).ConfigureAwait(false);
 
-        // Auth on the held connection. A character-less account answers
+        // AuthMessage on the held connection. A character-less account answers
         // NeedsCharacter and the server registers this connection for the
         // create that follows - so, unlike the one-shot legs, the stream stays
         // open instead of closing after the response.

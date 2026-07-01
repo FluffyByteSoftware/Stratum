@@ -21,7 +21,7 @@ public struct VersionResponsePacket : IPacketWritable
     public string Version;
 
     /// <inheritdoc/>
-    public readonly uint TypeId => PacketIds.Auth.VersionResponse;
+    public readonly uint TypeId => MessagePacketIds.AuthMessage.VersionResponse;
 
     /// <inheritdoc/>
     public readonly void Serialize(NetDataWriter writer)

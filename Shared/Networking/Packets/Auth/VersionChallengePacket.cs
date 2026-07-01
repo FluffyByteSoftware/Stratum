@@ -26,7 +26,7 @@ public struct VersionChallengePacket : IPacketWritable
     public string Version;
 
     /// <inheritdoc/>
-    public readonly uint TypeId => PacketIds.Auth.VersionChallenge;
+    public readonly uint TypeId => MessagePacketIds.AuthMessage.VersionChallenge;
 
     /// <inheritdoc/>
     public readonly void Serialize(NetDataWriter writer)
