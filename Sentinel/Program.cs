@@ -10,9 +10,11 @@ using LiteNetLib;
 using LiteNetLib.Utils;
 using Networking.Dispatch;
 using Networking.Udp;
+using Sentinel.Handlers;
 using Shared.Networking;
 using Shared.Networking.Packets.Auth;
 using Shared.Networking.Packets.Comparable;
+using Shared.Networking.Packets.LifeCycle;
 using System;
 using System.Buffers.Binary;
 using System.Threading.Tasks;
@@ -48,14 +50,20 @@ internal static class Program
             SessionTokenIssuer.Initialize(signingKey);
 
             _dispatcher.Register(
-                PacketIds.Auth.VersionResponse,
-                static reader =>
-                {
-                    var p = new VersionResponsePacket();
-                    p.Deserialize(reader);
-                    return p;
-                },
-                OnVersionResponse);
+                            PacketIds.Auth.VersionResponse,
+                            static reader =>
+                            {
+                                var p = new VersionResponsePacket();
+                                p.Deserialize(reader);
+                                return p;
+                            },
+                            OnVersionResponse);
+
+            _dispatcher.Register(
+                PacketIds.LifeCycle.Ping,
+                PingPacket.Deserialize,
+                KeepAliveHandler.OnPing);
+
             _dispatcher.Freeze();
 
             NetworkConfig netConfig = ConfigStore

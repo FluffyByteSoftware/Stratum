@@ -6,30 +6,29 @@
  *-------------------------------------------------------------
  */
 
-namespace Shared.Game.Characters
+namespace Shared.Game.Characters;
+
+/// <summary>
+/// Defines the various species available for character in the game.
+/// This only pertains to playable species.
+/// </summary>
+public enum PlayableSpecies
 {
     /// <summary>
-    /// Defines the various species available for character in the game.
-    /// This only pertains to playable species.
+    /// Default used for uninitialized characters
     /// </summary>
-    public enum PlayableSpecies
-    {
-        /// <summary>
-        /// Default used for uninitialized characters
-        /// </summary>
-        None = 0,
+    None = 0,
 
-        /// <summary>
-        /// The human species, the most common and versatile species in 
-        /// the game world.
-        /// </summary>
-        Human = 1,
-    }
+    /// <summary>
+    /// The human species, the most common and versatile species in 
+    /// the game world.
+    /// </summary>
+    Human = 1,
 }
 
 /*
- *------------------------------------------------------------
- * (PlayableSpecies.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
+*------------------------------------------------------------
+* (PlayableSpecies.cs)
+* See License.txt for licensing information.
+*-----------------------------------------------------------
+*/

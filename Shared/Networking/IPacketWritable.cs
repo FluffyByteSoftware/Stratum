@@ -8,30 +8,29 @@
 
 using LiteNetLib.Utils;
 
-namespace Shared.Networking
+namespace Shared.Networking;
+
+/// <summary>
+/// A writable packet interface.
+/// </summary>
+public interface IPacketWritable
 {
     /// <summary>
-    /// A writable packet interface.
+    /// Represents the packet identifier
     /// </summary>
-    public interface IPacketWritable
-    {
-        /// <summary>
-        /// Represents the packet identifier
-        /// </summary>
-        uint TypeId { get; }
+    uint TypeId { get; }
 
-        /// <summary>
-        /// Serializes the object to the specified writer.
-        /// </summary>
-        /// <param name="writer">The writer to serialize to.</param>
-        void Serialize(NetDataWriter writer);
-    }
+    /// <summary>
+    /// Serializes the object to the specified writer.
+    /// </summary>
+    /// <param name="writer">The writer to serialize to.</param>
+    void Serialize(NetDataWriter writer);
 }
 
 
 /*
- *------------------------------------------------------------
- * (IPacketWritable.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
+*------------------------------------------------------------
+* (IPacketWritable.cs)
+* See License.txt for licensing information.
+*-----------------------------------------------------------
+*/

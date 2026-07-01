@@ -42,8 +42,8 @@ internal static class Program
             var networkConfig = ConfigStore.LoadOrCreate<NetworkConfig>(Constellations.NetworkConfigPath);
 
             if (!IPAddress.TryParse(networkConfig.BindAddress, out var bindAddress))
-                Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
-                $"Invalid bindAddress in config: '{networkConfig.BindAddress}'."));
+                throw new InvalidOperationException(
+                    $"Invalid bindAddress in config: '{networkConfig.BindAddress}'.");
 
             var certificate = CertificateProvider.LoadOrCreate(Constellations.CertificatePath);
 
@@ -81,8 +81,6 @@ internal static class Program
                 createHandler.OnCharacterCreate);
 
             dispatcher.Freeze();
-
-            bindAddress ??= IPAddress.Any;
 
             host = new TcpHost(
                 bindAddress, networkConfig.Port, dispatcher, certificate);

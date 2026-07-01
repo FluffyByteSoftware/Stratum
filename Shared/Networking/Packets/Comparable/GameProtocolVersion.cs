@@ -6,30 +6,29 @@
  *-------------------------------------------------------------
  */
 
-namespace Shared.Networking.Packets.Comparable
+namespace Shared.Networking.Packets.Comparable;
+
+/// <summary>
+/// Defines the current wire protocol version advertised by the
+/// server and expected by compatible clients.
+/// </summary>
+/// <remarks>
+/// Compared as a plain string equality check — no parsing, no
+/// arithmetic. Increment on any breaking wire-format or auth-flow
+/// change. Format: "major.minor.patch".
+/// </remarks>
+public static class GameProtocolVersion
 {
     /// <summary>
-    /// Defines the current wire protocol version advertised by the
-    /// server and expected by compatible clients.
+    /// The current protocol version string sent in every
+    /// <see cref="Shared.Networking.Packets.Auth.VersionChallengePacket"/>.
     /// </summary>
-    /// <remarks>
-    /// Compared as a plain string equality check — no parsing, no
-    /// arithmetic. Increment on any breaking wire-format or auth-flow
-    /// change. Format: "major.minor.patch".
-    /// </remarks>
-    public static class GameProtocolVersion
-    {
-        /// <summary>
-        /// The current protocol version string sent in every
-        /// <see cref="Shared.Networking.Packets.Auth.VersionChallengePacket"/>.
-        /// </summary>
-        public const string Current = "0.1.0";
-    }
+    public const string Current = "0.1.0";
 }
 
 /*
- *------------------------------------------------------------
- * (GameProtocolVersion.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
+*------------------------------------------------------------
+* (GameProtocolVersion.cs)
+* See License.txt for licensing information.
+*-----------------------------------------------------------
+*/

@@ -144,6 +144,7 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine("[3] UDP auth with session token ...");
             Console.WriteLine("[4] Protocol version check ...");
+            Console.WriteLine("[6] Keep-alive ping/pong echo ...");
 
             UdpLegs.UdpAuth(token);
         }

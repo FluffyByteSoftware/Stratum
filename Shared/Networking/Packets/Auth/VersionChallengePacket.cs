@@ -8,51 +8,50 @@
 
 using LiteNetLib.Utils;
 
-namespace Shared.Networking.Packets.Auth
+namespace Shared.Networking.Packets.Auth;
+
+/// <summary>
+/// Server-to-client packet that opens the version-check
+/// exchange. Carries the server's current protocol version
+/// string; the client must respond with a
+/// <see cref="VersionResponsePacket"/>.
+/// </summary>
+public struct VersionChallengePacket : IPacketWritable
 {
     /// <summary>
-    /// Server-to-client packet that opens the version-check
-    /// exchange. Carries the server's current protocol version
-    /// string; the client must respond with a
-    /// <see cref="VersionResponsePacket"/>.
+    /// The server's current protocol version string.
+    /// Populated from <see cref="GameProtocolVersion.Current"/>
+    /// before sending; read back verbatim on the receive side.
     /// </summary>
-    public struct VersionChallengePacket : IPacketWritable
+    public string Version;
+
+    /// <inheritdoc/>
+    public readonly uint TypeId => PacketIds.Auth.VersionChallenge;
+
+    /// <inheritdoc/>
+    public readonly void Serialize(NetDataWriter writer)
     {
-        /// <summary>
-        /// The server's current protocol version string.
-        /// Populated from <see cref="GameProtocolVersion.Current"/>
-        /// before sending; read back verbatim on the receive side.
-        /// </summary>
-        public string Version;
+        writer.Put(Version);
+    }
 
-        /// <inheritdoc/>
-        public readonly uint TypeId => PacketIds.Auth.VersionChallenge;
-
-        /// <inheritdoc/>
-        public readonly void Serialize(NetDataWriter writer)
-        {
-            writer.Put(Version);
-        }
-
-        /// <summary>
-        /// Reads a <see cref="VersionChallengePacket"/> from
-        /// <paramref name="reader"/> into this instance.
-        /// </summary>
-        /// <param name="reader">
-        /// The reader positioned immediately after the 4-byte
-        /// type header has been consumed.
-        /// </param>
-        public void Deserialize(NetDataReader reader)
-        {
-            Version = reader.GetString();
-        }
+    /// <summary>
+    /// Reads a <see cref="VersionChallengePacket"/> from
+    /// <paramref name="reader"/> into this instance.
+    /// </summary>
+    /// <param name="reader">
+    /// The reader positioned immediately after the 4-byte
+    /// type header has been consumed.
+    /// </param>
+    public void Deserialize(NetDataReader reader)
+    {
+        Version = reader.GetString();
     }
 }
 
 
 /*
- *------------------------------------------------------------
- * (VersionChallengePacket.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
+*------------------------------------------------------------
+* (VersionChallengePacket.cs)
+* See License.txt for licensing information.
+*-----------------------------------------------------------
+*/

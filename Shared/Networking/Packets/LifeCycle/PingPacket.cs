@@ -7,57 +7,49 @@
  */
 
 using LiteNetLib.Utils;
-using Shared.Networking;
-using Stratum.Shared.Networking;
 using System;
 
-namespace Shared.Networking.Packets.LifeCycle
+namespace Shared.Networking.Packets.LifeCycle;
+
+public readonly struct PingPacket(long senderTimestampMs) : IPacketWritable
 {
-    public readonly struct PingPacket : IPacketWritable
+    public const uint TypeId = PacketIds.LifeCycle.Ping;
+
+    public long SenderTimestampMs { get; } = senderTimestampMs;
+
+    uint IPacketWritable.TypeId => TypeId;
+
+    public void Serialize(NetDataWriter writer)
     {
-        public const uint TypeId = PacketIds.LifeCycle.Ping;
+        writer.Put(SenderTimestampMs);
+    }
 
-        public long SenderTimestampMs { get; }
-
-        public PingPacket(long senderTimestampMs)
+    public static PingPacket Deserialize(NetDataReader reader)
+    {
+        try
         {
-            SenderTimestampMs = senderTimestampMs;
+            var ts = reader.GetLong();
+
+            return new PingPacket(ts);
         }
-
-        uint IPacketWritable.TypeId => TypeId;
-
-        public void Serialize(NetDataWriter writer)
+        catch (InvalidPacketException)
         {
-            writer.Put(SenderTimestampMs);
+            throw;
         }
-
-        public static PingPacket Deserialize(NetDataReader reader)
+        catch(Exception ex)
         {
-            try
-            {
-                var ts = reader.GetLong();
-
-                return new PingPacket(ts);
-            }
-            catch (InvalidPacketException)
-            {
-                throw;
-            }
-            catch(Exception ex)
-            {
-                throw new InvalidPacketException(
-                    TypeId, 
-                    "Failed to deserialize PingPacket.",
-                    ex);
-            }
+            throw new InvalidPacketException(
+                TypeId, 
+                "Failed to deserialize PingPacket.",
+                ex);
         }
     }
 }
 
 
 /*
- *------------------------------------------------------------
- * (PingPacket.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
+*------------------------------------------------------------
+* (PingPacket.cs)
+* See License.txt for licensing information.
+*-----------------------------------------------------------
+*/

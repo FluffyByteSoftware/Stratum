@@ -8,82 +8,74 @@
 
 using System;
 using LiteNetLib.Utils;
-using Stratum.Shared.Networking;
 
-namespace Shared.Networking.Packets.Auth
+namespace Shared.Networking.Packets.Auth;
+
+/// <summary>
+/// Initializes a new instance of the <see cref="AuthByPasswordPacket"/> class.
+/// </summary>
+/// <param name="accountId">The account identifier.</param>
+/// <param name="password">The password.</param>
+public readonly struct AuthByPasswordPacket(string accountId, string password) : IPacketWritable
 {
-    public readonly struct AuthByPasswordPacket : IPacketWritable
+    public const uint TypeId = PacketIds.Auth.AuthByPassword;
+
+    /// <summary>
+    /// The account ID of the packet.
+    /// </summary>
+    public string AccountId { get; } = accountId;
+    /// <summary>
+    /// The password for this account of this packet.
+    /// </summary>
+    public string Password { get; } = password;
+
+    uint IPacketWritable.TypeId => TypeId;
+
+    /// <summary>
+    /// Serializes the account credentials to the specified writer.
+    /// </summary>
+    /// <param name="writer">The writer to serialize the data to.</param>
+    public void Serialize(NetDataWriter writer)
     {
-        public const uint TypeId = PacketIds.Auth.AuthByPassword;
+        writer.Put(AccountId);
+        writer.Put(Password);
+    }
 
-        /// <summary>
-        /// The account ID of the packet.
-        /// </summary>
-        public string AccountId { get; }
-        /// <summary>
-        /// The password for this account of this packet.
-        /// </summary>
-        public string Password { get; }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="AuthByPasswordPacket"/> class.
-        /// </summary>
-        /// <param name="accountId">The account identifier.</param>
-        /// <param name="password">The password.</param>
-        public AuthByPasswordPacket(string accountId, string password)
+    /// <summary>
+    /// Deserializes an AuthByPasswordPacket from a NetDataReader.
+    /// </summary>
+    /// <param name="reader">The data reader containing the serialized packet 
+    /// data.</param>
+    /// <returns>A new AuthByPasswordPacket instance created from the deserialized 
+    /// data.</returns>
+    /// <exception cref="InvalidPacketException">Thrown when the packet data is 
+    /// invalid or deserialization fails.</exception>
+    public static AuthByPasswordPacket Deserialize(NetDataReader reader)
+    {
+        try
         {
-            AccountId = accountId;
-            Password = password;
+            var accountId = reader.GetString();
+            var password = reader.GetString();
+
+            return new AuthByPasswordPacket(accountId, password);
         }
-
-        uint IPacketWritable.TypeId => TypeId;
-
-        /// <summary>
-        /// Serializes the account credentials to the specified writer.
-        /// </summary>
-        /// <param name="writer">The writer to serialize the data to.</param>
-        public void Serialize(NetDataWriter writer)
+        catch (InvalidPacketException)
         {
-            writer.Put(AccountId);
-            writer.Put(Password);
+            throw;
         }
-
-        /// <summary>
-        /// Deserializes an AuthByPasswordPacket from a NetDataReader.
-        /// </summary>
-        /// <param name="reader">The data reader containing the serialized packet 
-        /// data.</param>
-        /// <returns>A new AuthByPasswordPacket instance created from the deserialized 
-        /// data.</returns>
-        /// <exception cref="InvalidPacketException">Thrown when the packet data is 
-        /// invalid or deserialization fails.</exception>
-        public static AuthByPasswordPacket Deserialize(NetDataReader reader)
+        catch(Exception ex)
         {
-            try
-            {
-                var accountId = reader.GetString();
-                var password = reader.GetString();
-
-                return new AuthByPasswordPacket(accountId, password);
-            }
-            catch (InvalidPacketException)
-            {
-                throw;
-            }
-            catch(Exception ex)
-            {
-                throw new InvalidPacketException(
-                    TypeId,
-                    "Failed to deserialize AuthByPasswordPacket.",
-                    ex);
-            }
+            throw new InvalidPacketException(
+                TypeId,
+                "Failed to deserialize AuthByPasswordPacket.",
+                ex);
         }
     }
 }
 
 /*
- *------------------------------------------------------------
- * (AuthByPasswordPacket.cs)
- * See License.txt for licensing information.
- *-----------------------------------------------------------
- */
+*------------------------------------------------------------
+* (AuthByPasswordPacket.cs)
+* See License.txt for licensing information.
+*-----------------------------------------------------------
+*/
