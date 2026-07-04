@@ -164,6 +164,7 @@ public sealed class DiskManager
         }
 
         var fullPath = Path.Combine(_rootPath, relativePath);
+
         return File.ReadAllBytes(fullPath);
     }
 

@@ -35,6 +35,7 @@ public sealed class UdpHost : INetEventListener
     private const int PollIntervalMs = 15;
 
     private readonly int _port;
+    private readonly UdpBindMode _bindMode;
     private readonly NetManager _net;
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly CancellationToken _shutdownToken;
@@ -85,17 +86,22 @@ public sealed class UdpHost : INetEventListener
     /// </summary>
     /// <param name="port">The port number to listen on (1-65535). The
     /// socket binds on all local interfaces.</param>
+    /// <param name="bindMode">Specifies which local interfaces the host should bind to. Defaults to all interfaces.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/>
     /// is less than 1 or greater than 65535.</exception>
-    public UdpHost(int port)
+    public UdpHost(int port, UdpBindMode bindMode = UdpBindMode.AllInterfaces)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(
                 nameof(port), "Port must be in the range 1-65535.");
 
         _port = port;
+        
+        _bindMode = bindMode;
+
         _net = new NetManager(this);
         _shutdownToken = _shutdownCts.Token;
+        _net.IPv6Enabled = false;
     }
 
     /// <summary>
@@ -111,7 +117,21 @@ public sealed class UdpHost : INetEventListener
         if (Interlocked.Exchange(ref _started, 1) != 0)
             throw new InvalidOperationException("Host is already started.");
 
-        if (!_net.Start(_port))
+        bool started = _bindMode switch
+        {
+            // Loopback-only binds the loopback address pair. The IPv6
+            // address is inert here (IPv6Enabled is false, so the v6
+            // socket never binds) but the overload requires the slot;
+            // the loopback value is passed for honest intent, not effect.
+            UdpBindMode.LoopbackOnly => _net.Start(
+                IPAddress.Loopback, IPAddress.IPv6Loopback, _port),
+
+            // All-interfaces is the port-only Start — byte-for-byte the
+            // pre-bind-mode behavior every existing consumer relies on.
+            _ => _net.Start(_port),
+        };
+
+        if (!started)
             throw new InvalidOperationException(
                 $"Failed to start UDP socket on port {_port}.");
 
