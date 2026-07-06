@@ -58,8 +58,14 @@ own process.
   LoginServer and Sentinel together, and runs a startup reconciler that heals
   the account↔character link if it ever drifts out of sync.
 - **ZoneManager** — master clock, cross-zone coordination, zone lifecycle.
-  *Not built.*
-- **Zones** — one process per zone, authoritative simulation. *Not built.*
+  Owns the authoritative in-memory registry of live zones that Sentinel's
+  bridge will eventually query. The registration front door is built (it
+  verifies a dialing zone and confirms it); the registry itself and the
+  master clock are still to come.
+- **Zone** — one process per zone, authoritative simulation for that zone
+  only. Dials outward to ZoneManager and registers itself, then (eventually)
+  ticks independently and emits event streams without knowing its subscribers.
+  Registration is built; the simulation side hasn't started.
 
 ## Solution layout
 
@@ -71,11 +77,15 @@ Stratum.slnx
 ├── LoginServer/    net10.0  — auth + character-create exe
 ├── Sentinel/       net10.0  — UDP front door exe
 ├── Core/           net10.0  — operator console exe
+├── ZoneManager/    net10.0  — zone registration hub exe (master clock + registry — in progress)
+├── Zone/           net10.0  — per-zone simulation exe (dials + registers — in progress)
 └── Probe/          net10.0  — standing regression tool (six legs)
 ```
 
 **Rule of thumb:** if the client would never need it, it doesn't belong in
 `Shared`. `Shared` is the contract between client and server, nothing else.
+Server-only contracts live server-side — e.g. the zone-registration outcome
+packet lives in `ZoneManager` and `Zone` references it, never `Shared`.
 
 ## Authentication
 
@@ -90,6 +100,29 @@ Stratum.slnx
 - **Version check:** right after UDP auth, Sentinel and the client trade
   protocol version strings. Mismatch means disconnect, before any gameplay
   traffic flows.
+
+## Zone registration
+
+Same idea as client key auth, turned inward for the server mesh. A zone proves
+who it is to ZoneManager the same way a returning player proves who they are to
+LoginServer: it signs, ZoneManager verifies.
+
+- The zone signs a marker — its own zone id plus a timestamp — with an Ed25519
+  registration seed, and that signed marker rides inside the LiteNetLib
+  connection request (the request *is* the registration request, mirroring the
+  Sentinel pattern). The zone id is inside the signed bytes, so a valid
+  signature authenticates the identity, not just possession of the seed.
+- The seed is asymmetric by generation authority. ZoneManager is the *only*
+  side that can generate the keypair; a zone is load-only and will refuse to
+  start rather than mint its own identity. The seed gets cloned out to each
+  zone host out of band, after ZoneManager has generated and flushed it.
+- ZoneManager verifies the signature before admitting the connection, then
+  sends back a confirmation packet. It's server-only control-plane traffic on
+  its own channel — it never crosses the client boundary, so Sentinel's
+  client bridge can't forward it by accident.
+
+Signature verification only for now; a timestamp-freshness (replay) window is
+a deferred hardening pass.
 
 ## Characters
 
@@ -115,17 +148,19 @@ Flat files, no database. Atomic writes (write to temp, fsync, rename).
 Everything hangs off one shared data root:
 
 ```
-data/config/        runtime config, not committed
+data/config/         runtime config, not committed
 data/certs/          TLS cert
-data/keys/           session signing key, shared by LoginServer + Sentinel
+data/keys/           session signing key (LoginServer + Sentinel);
+                     zone-registration keypair (ZoneManager generates, zones clone the seed)
 data/accounts/       {id}.json
 data/characters/     {name}.json
+data/zones/{id}/     per-zone persistent state (reserved)
 data/logs/           per-process log files
 ```
 
 ## Status
 
-**Working, end to end:**
+**Working, end to end (Probe-verified):**
 - Full login flow — key auth, password auth, character creation over the
   wire, re-auth, UDP handoff, version check. All exercised by
   `Stratum.Probe`, a six-leg regression tool that's the gate before any
@@ -135,11 +170,19 @@ data/logs/           per-process log files
 - The net10.0 retarget and the Godot migration — Probe-verified, not just
   "it compiles."
 
+**Built, wire-verification pending:**
+- The Zone↔ZoneManager registration round trip — a zone signs its id, dials
+  ZoneManager over UDP, gets verified and admitted, and receives a
+  confirmation packet. Code-complete on both sides; the manual two-process
+  run that actually proves it on the wire hasn't been done yet. Green build ≠
+  verified.
+
 **Not built yet:**
 - Any actual gameplay packets. There's a channel reserved (`0x03`) for it,
-  and that's next up.
-- ZoneManager, Zones, the ECS, voxels, AI — the whole simulation side is
-  still just design notes.
+  and that's next up once the zone mesh can hold a registration.
+- ZoneManager's live-zone registry and master clock; Sentinel's client↔zone
+  bridge that will consume the registry.
+- The ECS, voxels, AI — the whole simulation side is still just design notes.
 - The Godot client itself. The server's being proven out first; the client
   comes after.
 
