@@ -7,5 +7,6 @@
   <Project Path="Sentinel/Sentinel.csproj" Id="3fefd518-b832-4dec-be87-a0cae6efcbd7" />
   <Project Path="Shared/Shared.csproj" />
   <Project Path="SystemTools/SystemTools.csproj" />
+  <Project Path="Zone/Zone.csproj" Id="45066bc8-7b7b-4481-86fa-5b22a96fe66c" />
   <Project Path="ZoneManager/ZoneManager.csproj" Id="4968e850-8b5b-412c-830b-cefd5ae2b011" />
 </Solution>
