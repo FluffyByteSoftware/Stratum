@@ -10,6 +10,7 @@ using System.Buffers.Binary;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using Networking.Udp;
+using SystemTools.Clock;
 using SystemTools.Logger;
 using SystemTools.Security;
 using SystemTools.Storage;
@@ -20,17 +21,19 @@ namespace Zone;
 /// <summary>
 /// Entry point for a Zone process: the dial side of the star topology.
 /// Loads its registration seed, signs a zone-identity marker, dials
-/// ZoneManager to register, and receives the registration-outcome packet
-/// that confirms the round trip. It then idles; the sim loop, ECS, and
-/// ticks arrive later.
+/// ZoneManager to register, receives the registration-outcome packet that
+/// confirms the round trip, and runs the fixed-timestep simulation clock.
+/// This brick wires the <see cref="Heartbeat"/> at 60 Hz with a single
+/// witness system; real systems, the ECS, and the event buffer arrive later.
 /// </summary>
 /// <remarks>
 /// Boot order mirrors ZoneManager: <see cref="DiskManager"/> is initialized
 /// first so <see cref="ZoneRegistrationKeyProvider.LoadSeed"/> has a live
-/// storage layer, and the <c>finally</c> reverses it — stop the connector,
-/// drain <see cref="Scribe"/>, then flush and shut down the disk layer last.
-/// A missing zone-id arg or a missing/malformed seed throws; the catch logs
-/// it and the finally still runs a clean teardown.
+/// storage layer. Teardown reverses boot and the Heartbeat stops first —
+/// its thread is foreground, so a skipped stop hangs the process; it is
+/// also the producer, so it halts before the log sink drains. The tick
+/// evidence line is pumped after the stop (counters stable) and before
+/// <see cref="Scribe.ShutdownAsync"/> (sink still live).
 /// </remarks>
 internal static class Program
 {
@@ -41,6 +44,13 @@ internal static class Program
     /// it, Zone reads it through the one-way reference.
     /// </summary>
     private const string RemoteHost = "127.0.0.1";
+
+    /// <summary>
+    /// The zone simulation master tick rate. 60 Hz per the simulation
+    /// design; passed explicitly because <see cref="Heartbeat.Initialize"/>
+    /// defaults to 30.
+    /// </summary>
+    private const int TickRateHz = 60;
 
     /// <summary>
     /// Registration marker layout: a 4-byte big-endian zone id and an 8-byte
@@ -63,6 +73,7 @@ internal static class Program
         TypeHeaderLength + OutcomePayloadLength;
 
     private static UdpConnector? _connector;
+    private static readonly TickWitness _tickWitness = new();
 
     private static async Task Main(string[] args)
     {
@@ -121,6 +132,18 @@ internal static class Program
                 $"Zone {zoneId} dialing ZoneManager at "
                 + $"{RemoteHost}:{RegistrationTransport.Port} to register."));
 
+            // The simulation clock. First live exercise of Heartbeat: one
+            // witness system, no work. Registration precedes Start by
+            // contract; the clock runs regardless of registration outcome —
+            // gating the sim on registry state is a later, deliberate fork.
+            Heartbeat.Initialize(TickRateHz);
+            Heartbeat.Instance.Register(_tickWitness);
+            Heartbeat.Instance.Start();
+
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
+                $"Zone {zoneId} simulation clock started at "
+                + $"{TickRateHz} Hz."));
+
             await WaitForShutdownAsync();
         }
         catch (Exception ex)
@@ -130,6 +153,22 @@ internal static class Program
         }
         finally
         {
+            // Heartbeat first: its thread is foreground (skip this and the
+            // process hangs) and it produces log traffic (stop the producer
+            // before draining the sink). IsRunning guards the early-throw
+            // path where Initialize was never reached.
+            if (Heartbeat.IsRunning)
+            {
+                await Heartbeat.Instance.StopAsync();
+
+                // The gate's evidence: loop count, dispatch count, measured
+                // rate. Counters are stable now; Scribe is still live.
+                Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
+                    $"Clock stopped. Ticks={Heartbeat.Instance.CurrentTick}, "
+                    + $"witnessed={_tickWitness.TickCount}, "
+                    + $"measured={Heartbeat.Instance.MeasuredHz:F2} Hz."));
+            }
+
             if (_connector is not null)
                 await _connector.StopAsync();
 

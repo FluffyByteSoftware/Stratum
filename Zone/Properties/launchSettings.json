@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Zone": {
+      "commandName": "Project",
+      "commandLineArgs": "5"
+    }
+  }
+}
