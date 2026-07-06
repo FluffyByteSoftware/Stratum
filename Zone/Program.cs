@@ -35,12 +35,12 @@ namespace Zone;
 internal static class Program
 {
     /// <summary>
-    /// Loopback remote ZoneManager dials. Hardcoded to match ZoneManager's
-    /// listen port for this brick; graduates to a <c>NetworkConfig</c> field
-    /// (shared-tier fork, core project) when both sides must agree by config.
+    /// Loopback host the Zone dials to reach ZoneManager. Zone-local — the
+    /// dial target, not part of the shared registration contract. The port
+    /// comes from <see cref="RegistrationTransport.Port"/>: ZoneManager owns
+    /// it, Zone reads it through the one-way reference.
     /// </summary>
     private const string RemoteHost = "127.0.0.1";
-    private const int RemotePort = 9050;
 
     /// <summary>
     /// Registration marker layout: a 4-byte big-endian zone id and an 8-byte
@@ -109,7 +109,7 @@ internal static class Program
             connectionData.Put(signature);
 
             _connector = new UdpConnector(
-                RemoteHost, RemotePort, connectionData);
+                RemoteHost, RegistrationTransport.Port, connectionData);
 
             _connector.PeerConnected += OnPeerConnected;
             _connector.PeerDisconnected += OnPeerDisconnected;
@@ -119,7 +119,7 @@ internal static class Program
 
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
                 $"Zone {zoneId} dialing ZoneManager at "
-                + $"{RemoteHost}:{RemotePort} to register."));
+                + $"{RemoteHost}:{RegistrationTransport.Port} to register."));
 
             await WaitForShutdownAsync();
         }

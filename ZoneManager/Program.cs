@@ -6,9 +6,7 @@
  *-------------------------------------------------------------
  */
 
-using System;
 using System.Buffers.Binary;
-using System.Threading.Tasks;
 using LiteNetLib;
 using Networking.Udp;
 using SystemTools.Logger;
@@ -35,15 +33,6 @@ namespace ZoneManager;
 internal static class Program
 {
     /// <summary>
-    /// Loopback bind port for the registration <see cref="UdpHost"/>.
-    /// Hardcoded for the single-box dev skeleton — nothing dials it yet,
-    /// so no cross-process agreement is needed. Graduates to a
-    /// <c>NetworkConfig</c> field (a shared-tier fork) when the Zone dial
-    /// side must discover this port to register, next brick.
-    /// </summary>
-    private const int UdpPort = 9050;
-
-    /// <summary>
     /// The zone-registration public key ZoneManager verifies signatures
     /// against. Loaded at boot to exercise the provider's first real call
     /// — which generates and clones the keypair on genuine first boot —
@@ -67,6 +56,7 @@ internal static class Program
         SignedLength + SignatureLength;
 
     private static UdpHost? _host;
+    private static readonly ZoneRegistry _registry = new();
 
     private static async Task Main()
     {
@@ -81,14 +71,14 @@ internal static class Program
                 "Zone registration public key loaded "
                 + $"({_registrationPublicKey.Length} bytes)."));
 
-            _host = new UdpHost(UdpPort, UdpBindMode.LoopbackOnly);
+            _host = new UdpHost(RegistrationTransport.Port, UdpBindMode.LoopbackOnly);
             _host.ConnectionRequested += OnConnectionRequested;
             _host.PeerConnected += OnPeerConnected;
             _host.Start();
 
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
                 "ZoneManager ready. UDP registration listening on "
-                + $"loopback port {UdpPort}."));
+                + $"loopback port {RegistrationTransport.Port}."));
 
             await WaitForShutdownAsync();
         }
@@ -180,10 +170,22 @@ internal static class Program
             return;
         }
 
+        // First-wins: a duplicate live zone id is rejected here, before any
+        // acceptance is sent. The dialer's signature verified, but the id is
+        // already registered — drop it rather than overwrite the live entry.
+        if (!_registry.TryRegister(zoneId, new UdpConnection(peer)))
+        {
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
+                $"Rejected zone {zoneId}: id already registered; "
+                + "dropping duplicate dialer."));
+            peer.Disconnect();
+            return;
+        }
+
         UdpHost.Send(peer, new ZoneRegistrationAcceptedPacket(zoneId));
 
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
-            $"Sent registration confirmation to zone {zoneId}."));
+            $"Registered and confirmed zone {zoneId}."));
     }
 
     private static Task WaitForShutdownAsync()
