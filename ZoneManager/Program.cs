@@ -19,9 +19,11 @@ namespace ZoneManager;
 /// <summary>
 /// Entry point for the ZoneManager process: the star-topology hub the
 /// Zone processes dial outward to and register against over UDP. This
-/// brick verifies dialing zones against the zone-registration public key
-/// and confirms each accepted zone with a registration-outcome packet;
-/// the zone registry and death clock arrive in later bricks.
+/// brick verifies dialing zones against the zone-registration public key,
+/// confirms each accepted zone with a registration-outcome packet, tracks
+/// live zones in the registry, and evicts a zone's entry when its peer
+/// disconnects so a crashed zone can relaunch and re-register; the death
+/// clock arrives in a later brick.
 /// </summary>
 /// <remarks>
 /// Boot order mirrors LoginServer and Sentinel: <see cref="DiskManager"/>
@@ -74,6 +76,7 @@ internal static class Program
             _host = new UdpHost(RegistrationTransport.Port, UdpBindMode.LoopbackOnly);
             _host.ConnectionRequested += OnConnectionRequested;
             _host.PeerConnected += OnPeerConnected;
+            _host.PeerDisconnected += OnPeerDisconnected;
             _host.Start();
 
             Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
@@ -186,6 +189,37 @@ internal static class Program
 
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
             $"Registered and confirmed zone {zoneId}."));
+    }
+
+    /// <summary>
+    /// Fires when a peer disconnects for any reason — graceful close, our
+    /// own duplicate-reject drop, or crash timeout. Evicts the disconnecting
+    /// peer's registry entry, keyed by peer id, so a crashed or relaunched
+    /// zone can re-register. Fires on the host poll thread.
+    /// </summary>
+    /// <remarks>
+    /// Eviction is keyed on <see cref="NetPeer.Id"/>, not the zone id on the
+    /// peer Tag: a rejected duplicate dialer disconnects carrying the same
+    /// zone id as the live incumbent, so evicting by zone id would drop the
+    /// wrong entry. The duplicate was never stored, so its peer id matches
+    /// nothing and the incumbent survives — no guard needed. The no-match
+    /// case is logged at Debug so a quiet non-eviction is visible evidence,
+    /// not just an absent line.
+    /// </remarks>
+    private static void OnPeerDisconnected(
+        NetPeer peer, DisconnectInfo disconnectInfo)
+    {
+        if (_registry.TryUnregister(peer.Id, out uint zoneId))
+        {
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
+                $"Evicted zone {zoneId}: peer {peer.Id} disconnected "
+                + $"({disconnectInfo.Reason})."));
+            return;
+        }
+
+        Scribe.Pump(new ScribeMessage(ScribeSeverity.Debug,
+            $"Peer {peer.Id} disconnected ({disconnectInfo.Reason}) "
+            + "with no live registry entry."));
     }
 
     private static Task WaitForShutdownAsync()

@@ -21,10 +21,9 @@ namespace ZoneManager.Registration;
 /// but the registry is guarded by a lock because later readers (the death
 /// clock, cross-zone routing) run on other threads. Registration is
 /// first-wins: a zone id already present is rejected, not overwritten —
-/// see <see cref="TryRegister"/>. Eviction (dropping an entry when a peer
-/// disconnects) is a separate later brick; until it exists, a crashed
-/// zone's entry persists until ZoneManager restarts, so a relaunched zone
-/// of the same id cannot re-register.
+/// see <see cref="TryRegister"/>. Eviction is keyed on the disconnecting
+/// peer's id, not the zone id — see <see cref="TryUnregister"/> — so a
+/// crashed or relaunched zone frees its slot and can re-register.
 /// </remarks>
 internal sealed class ZoneRegistry
 {
@@ -51,6 +50,50 @@ internal sealed class ZoneRegistry
             // TryAdd is the first-wins gate: no overwrite on a live id.
             return _zones.TryAdd(zoneId, registration);
         }
+    }
+
+    /// <summary>
+    /// Attempts to evict a live zone when its peer disconnects, keyed by the
+    /// disconnecting peer's transport id. Scans for the entry whose
+    /// <see cref="UdpConnection.PeerId"/> matches <paramref name="peerId"/>
+    /// and removes it. Returns <see langword="true"/> with the evicted zone
+    /// id on a match; <see langword="false"/> otherwise.
+    /// </summary>
+    /// <param name="peerId">The disconnecting peer's transport id
+    /// (<c>NetPeer.Id</c>).</param>
+    /// <param name="zoneId">On success, the evicted zone id; zero otherwise.</param>
+    /// <returns><see langword="true"/> if an entry was evicted;
+    /// <see langword="false"/> if no live entry owned that peer id.</returns>
+    /// <remarks>
+    /// Keyed on peer id, not zone id, deliberately. A rejected duplicate
+    /// dialer disconnects carrying the same zone id as the live incumbent,
+    /// so evicting by zone id would drop the wrong entry. The duplicate was
+    /// never stored (first-wins <see cref="TryRegister"/> refused it), so no
+    /// entry owns its peer id and the scan finds nothing — the reject case
+    /// needs no special guard. Peer ids are unique per live peer, so at most
+    /// one entry matches. The scan is O(n) over at most a couple dozen zones
+    /// — trivial — and it keeps eviction independent of whether the peer's
+    /// Tag survives into the disconnect callback. The early return exits
+    /// before the enumerator advances again, so removing mid-iteration is
+    /// safe.
+    /// </remarks>
+    public bool TryUnregister(int peerId, out uint zoneId)
+    {
+        lock (_sync)
+        {
+            foreach (var (id, registration) in _zones)
+            {
+                if (registration.Connection.PeerId == peerId)
+                {
+                    _zones.Remove(id);
+                    zoneId = id;
+                    return true;
+                }
+            }
+        }
+
+        zoneId = 0;
+        return false;
     }
 }
 
