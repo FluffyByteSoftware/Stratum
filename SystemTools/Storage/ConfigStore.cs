@@ -50,6 +50,15 @@ public static class ConfigStore
     /// with default values if the file does not exist.</returns>
     /// <exception cref="InvalidOperationException">Thrown when the configuration 
     /// file exists but is malformed or deserializes to null.</exception>
+    /// <remarks>
+    /// The miss branch writes defaults into the write-back cache and returns
+    /// without forcing a flush. This is deliberate: first-boot config does not
+    /// need write-through. The normal 2 s flush cadence persists it, and if
+    /// that write fails the defaults are already in memory and returned, with
+    /// the failure surfaced through <see cref="DiskManager.HasPersistFailures"/>
+    /// and the recovery dump — next boot simply regenerates. A discarded
+    /// <c>FlushAsync()</c> here would only look like a guarantee it never gave.
+    /// </remarks>
     public static T LoadOrCreate<T>(string relativePath) 
         where T : new()
     {
@@ -86,7 +95,6 @@ public static class ConfigStore
         string defaultJson = JsonConvert.SerializeObject(defaults, IndentedSettings);
 
         disk.WriteTextFile(relativePath, defaultJson);
-        disk.FlushAsync();
 
         return defaults;
     }

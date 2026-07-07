@@ -48,8 +48,9 @@ public sealed class DiskManager
     private const string ProcToken = "{proc}";
     private const string RecoveryDirName = "recovery";
 
-    private static DiskManager? _instance;
-    private static bool _initialized;
+    private static volatile DiskManager? _instance;
+    private static volatile bool _initialized;
+    private static readonly Lock _initLock = new();
 
     /// <summary>
     /// The process-wide DiskManager instance. Throws if accessed before <see cref="Initialize"/>.
@@ -111,8 +112,14 @@ public sealed class DiskManager
         var rootPath = Constellations.DataRoot;
 
         if (_initialized) return;
-        _instance = new DiskManager(rootPath);
-        _initialized = true;
+
+        lock (_initLock)
+        {
+            if (_initialized) return;
+
+            _instance = new DiskManager(rootPath);
+            _initialized = true;
+        }
     }
 
     private DiskManager(string rootPath)
@@ -326,6 +333,13 @@ public sealed class DiskManager
         FlushOnce();
         _cts.Dispose();
         _flushSignal.Dispose();
+
+        // Drop the static handle now that this instance's primitives 
+        // are disposed.
+        lock (_initLock)
+        {
+            _instance = null;
+        }
     }
 
     private void SignalFlush()
