@@ -45,7 +45,7 @@ public static class ConfigStore
     /// </summary>
     /// <typeparam name="T">The type of the configuration object. Must have a 
     /// parameterless constructor.</typeparam>
-    /// <param name="relativePath">The relative path to the configuration file.</param>
+    /// <param name="absolutePath">The absolute path to the configuration file.</param>
     /// <returns>The loaded configuration object from the file, or a new instance 
     /// with default values if the file does not exist.</returns>
     /// <exception cref="InvalidOperationException">Thrown when the configuration 
@@ -59,14 +59,14 @@ public static class ConfigStore
     /// and the recovery dump — next boot simply regenerates. A discarded
     /// <c>FlushAsync()</c> here would only look like a guarantee it never gave.
     /// </remarks>
-    public static T LoadOrCreate<T>(string relativePath) 
+    public static T LoadOrCreate<T>(string absolutePath) 
         where T : new()
     {
         DiskManager disk = DiskManager.Instance;
 
-        if (disk.FileExists(relativePath))
+        if (disk.FileExists(absolutePath))
         {
-            string json = disk.ReadTextFile(relativePath);
+            string json = disk.ReadTextFile(absolutePath);
 
             try
             {
@@ -74,13 +74,13 @@ public static class ConfigStore
 
                 return loaded is null
                     ? throw new InvalidOperationException(
-                        $"Config file '{relativePath}' deserialized to null.")
+                        $"Config file '{absolutePath}' deserialized to null.")
                     : loaded;
             }
             catch (JsonException ex)
             {
                 throw new InvalidOperationException(
-                    $"Config file '{relativePath}' is malformed: {ex.Message}",
+                    $"Config file '{absolutePath}' is malformed: {ex.Message}",
                     ex);
             }            
             catch(Exception ex)
@@ -94,7 +94,7 @@ public static class ConfigStore
         T defaults = new();
         string defaultJson = JsonConvert.SerializeObject(defaults, IndentedSettings);
 
-        disk.WriteTextFile(relativePath, defaultJson);
+        disk.WriteTextFile(absolutePath, defaultJson);
 
         return defaults;
     }
