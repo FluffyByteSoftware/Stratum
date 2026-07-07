@@ -21,19 +21,25 @@ namespace Zone;
 /// <summary>
 /// Entry point for a Zone process: the dial side of the star topology.
 /// Loads its registration seed, signs a zone-identity marker, dials
-/// ZoneManager to register, receives the registration-outcome packet that
-/// confirms the round trip, and runs the fixed-timestep simulation clock.
-/// This brick wires the <see cref="Heartbeat"/> at 60 Hz with a single
-/// witness system; real systems, the ECS, and the event buffer arrive later.
+/// ZoneManager to register, and starts the 60 Hz simulation clock only
+/// once the registration-outcome packet confirms the registry entry. A
+/// zone that fails to register terminates: no confirmation, no clock,
+/// no process.
 /// </summary>
 /// <remarks>
 /// Boot order mirrors ZoneManager: <see cref="DiskManager"/> is initialized
 /// first so <see cref="ZoneRegistrationKeyProvider.LoadSeed"/> has a live
-/// storage layer. Teardown reverses boot and the Heartbeat stops first —
-/// its thread is foreground, so a skipped stop hangs the process; it is
-/// also the producer, so it halts before the log sink drains. The tick
-/// evidence line is pumped after the stop (counters stable) and before
-/// <see cref="Scribe.ShutdownAsync"/> (sink still live).
+/// storage layer. The Heartbeat is initialized and its systems registered
+/// in <c>Main</c> (registration must precede <see cref="Heartbeat.Start"/>
+/// by contract), but <c>Start</c> is called from the connector's poll
+/// thread inside the confirmed-outcome branch — the clock thread does not
+/// exist until the zone is registered. A disconnect before confirmation
+/// (rejected marker, dial timeout, duplicate drop) signals the shutdown
+/// task, routing through the same <c>finally</c> teardown as Ctrl+C. A
+/// drop after confirmation is a Warn only; reconnect-versus-terminate for
+/// a lost ZoneManager is a deliberate later fork. Teardown: Heartbeat
+/// first (foreground thread; producer stops before the sink drains), then
+/// connector, Scribe, DiskManager.
 /// </remarks>
 internal static class Program
 {
@@ -74,6 +80,23 @@ internal static class Program
 
     private static UdpConnector? _connector;
     private static readonly TickWitness _tickWitness = new();
+
+    /// <summary>
+    /// Completed by Ctrl+C or by a pre-confirmation disconnect; Main awaits
+    /// it and falls into teardown. Static so the connector callbacks can
+    /// signal termination through the same path as an operator stop.
+    /// </summary>
+    private static readonly TaskCompletionSource _shutdownSignal = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// True once the registration-outcome packet has confirmed this zone's
+    /// registry entry. Written and read only on the connector's poll thread
+    /// (all three peer callbacks fire there), so no synchronization is
+    /// needed. Discriminates a fatal pre-confirmation disconnect from a
+    /// post-confirmation drop.
+    /// </summary>
+    private static bool _confirmed;
 
     private static async Task Main(string[] args)
     {
@@ -119,6 +142,12 @@ internal static class Program
             connectionData.Put(signedMessage);
             connectionData.Put(signature);
 
+            // Clock is initialized and its systems registered here — Register
+            // must precede Start by Heartbeat's contract — but Start happens
+            // in OnPacketReceived, only on a confirmed registration.
+            Heartbeat.Initialize(TickRateHz);
+            Heartbeat.Instance.Register(_tickWitness);
+
             _connector = new UdpConnector(
                 RemoteHost, RegistrationTransport.Port, connectionData);
 
@@ -132,18 +161,6 @@ internal static class Program
                 $"Zone {zoneId} dialing ZoneManager at "
                 + $"{RemoteHost}:{RegistrationTransport.Port} to register."));
 
-            // The simulation clock. First live exercise of Heartbeat: one
-            // witness system, no work. Registration precedes Start by
-            // contract; the clock runs regardless of registration outcome —
-            // gating the sim on registry state is a later, deliberate fork.
-            Heartbeat.Initialize(TickRateHz);
-            Heartbeat.Instance.Register(_tickWitness);
-            Heartbeat.Instance.Start();
-
-            Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
-                $"Zone {zoneId} simulation clock started at "
-                + $"{TickRateHz} Hz."));
-
             await WaitForShutdownAsync();
         }
         catch (Exception ex)
@@ -155,14 +172,12 @@ internal static class Program
         {
             // Heartbeat first: its thread is foreground (skip this and the
             // process hangs) and it produces log traffic (stop the producer
-            // before draining the sink). IsRunning guards the early-throw
-            // path where Initialize was never reached.
+            // before draining the sink). IsRunning only says Initialize ran;
+            // StopAsync on a never-started Heartbeat is a safe no-op.
             if (Heartbeat.IsRunning)
             {
                 await Heartbeat.Instance.StopAsync();
 
-                // The gate's evidence: loop count, dispatch count, measured
-                // rate. Counters are stable now; Scribe is still live.
                 Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
                     $"Clock stopped. Ticks={Heartbeat.Instance.CurrentTick}, "
                     + $"witnessed={_tickWitness.TickCount}, "
@@ -179,20 +194,31 @@ internal static class Program
         }
     }
 
-    // Peer established == the marker passed ZoneManager's gate. The outcome
-    // packet that confirms registry entry follows on this connection and is
-    // handled in OnPacketReceived.
+    // Peer established == the marker passed ZoneManager's gate. Not yet
+    // registered: the registry insert is confirmed by the outcome packet,
+    // and first-wins can still reject a duplicate after this fires.
     private static void OnPeerConnected(NetPeer peer)
     {
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
             $"Registration accepted by ZoneManager (peer {peer.Id})."));
     }
 
-    // Fires on a rejected marker, a timed-out dial, or a later drop — the
-    // connector makes one attempt and does not retry.
+    // Discriminates on _confirmed: a disconnect before the outcome packet
+    // (rejected marker, dial timeout, duplicate drop) means this zone has no
+    // registry entry and no purpose — terminate. A drop after confirmation
+    // is logged only; reconnect-vs-terminate is a deliberate later fork.
     private static void OnPeerDisconnected(
         NetPeer peer, DisconnectInfo disconnectInfo)
     {
+        if (!_confirmed)
+        {
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Error,
+                "Registration failed: disconnected before confirmation "
+                + $"({disconnectInfo.Reason}). Terminating."));
+            _shutdownSignal.TrySetResult();
+            return;
+        }
+
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
             "Disconnected from ZoneManager "
             + $"({disconnectInfo.Reason})."));
@@ -200,8 +226,8 @@ internal static class Program
 
     // Receives the registration-outcome packet from ZoneManager. Reads the
     // 4-byte big-endian type header raw (never reader.GetUInt), matches the
-    // control-plane RegistrationAccepted id, and reads back the echoed zone
-    // id — closing the register round trip.
+    // control-plane RegistrationAccepted id, reads back the echoed zone id —
+    // and starts the simulation clock: registered is what licenses ticking.
     private static void OnPacketReceived(NetPeer peer, NetPacketReader reader)
     {
         byte[] data = reader.GetRemainingBytes();
@@ -229,23 +255,49 @@ internal static class Program
         uint confirmedZoneId = BinaryPrimitives.ReadUInt32BigEndian(
             span[TypeHeaderLength..]);
 
+        if (_confirmed)
+        {
+            Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
+                "Duplicate registration outcome from ZoneManager; "
+                + "ignoring."));
+            return;
+        }
+
+        _confirmed = true;
+
         Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
             $"Registration confirmed by ZoneManager for zone "
             + $"{confirmedZoneId}."));
+
+        Heartbeat.Instance.Start();
+
+        Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
+            $"Zone {confirmedZoneId} simulation clock started at "
+            + $"{TickRateHz} Hz."));
+    }
+
+    // Heartbeat exposes no "was Start called" query; track it locally. Poll
+    // thread only, like _confirmed.
+    private static bool _heartbeatStarted;
+
+    private static bool HeartbeatStarted()
+    {
+        if (_heartbeatStarted)
+            return true;
+
+        _heartbeatStarted = true;
+        return false;
     }
 
     private static Task WaitForShutdownAsync()
     {
-        var tcs = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true;
-            tcs.TrySetResult();
+            _shutdownSignal.TrySetResult();
         };
 
-        return tcs.Task;
+        return _shutdownSignal.Task;
     }
 }
 
