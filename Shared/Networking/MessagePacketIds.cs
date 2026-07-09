@@ -128,6 +128,15 @@ public static class MessagePacketIds
         /// Server is approving or denying the client's exit.
         /// </summary>
         public const uint ZoneExitResponse  = 0x03_00_00_06;
+        /// <summary>
+        /// Packet Id for sending a ping request within the zone data context.
+        /// </summary>
+        public const uint Ping              = 0x03_00_00_07;
+        /// <summary>
+        /// Packet Id for sending a pong response within the zone data context.
+        /// </summary>
+        public const uint Pong              = 0x03_00_00_08;
+
     }   
     
 }

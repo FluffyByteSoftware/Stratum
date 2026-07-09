@@ -15,6 +15,7 @@ using Shared.Networking;
 using Shared.Networking.Packets.Auth;
 using Shared.Networking.Packets.Comparable;
 using Shared.Networking.Packets.LifeCycle;
+using Shared.Networking.Packets.Diagnostics;
 using System;
 using System.Buffers.Binary;
 using System.Threading.Tasks;
@@ -63,6 +64,11 @@ internal static class Program
                 MessagePacketIds.LifeCycleMessage.Ping,
                 PingPacket.Deserialize,
                 KeepAliveHandler.OnPing);
+
+            _dispatcher.Register(
+                MessagePacketIds.ZoneDataMessage.Ping,
+                GameDiagnosticPingPacket.Deserialize,
+                OnGameDiagnosticPing);
 
             _dispatcher.Freeze();
 
@@ -281,6 +287,34 @@ internal static class Program
         };
 
         return tcs.Task;
+    }
+
+    /// <summary>
+    /// Echoes the nonce carried by an inbound
+    /// <see cref="GameDiagnosticPingPacket"/> back to the originating
+    /// peer as a <see cref="GameDiagnosticPongPacket"/>.
+    /// </summary>
+    /// <param name="connection">The transport wrapper for the
+    /// originating peer; the pong is sent back over this same
+    /// connection.</param>
+    /// <param name="packet">The inbound diagnostic ping carrying the
+    /// sender's correlation nonce, echoed verbatim.</param>
+    /// <returns>A completed <see cref="ValueTask"/> — the echo is
+    /// synchronous and completes on the poll thread.</returns>
+    /// <remarks>
+    /// A <c>Program</c> static rather than a <c>Sentinel.Handlers</c>
+    /// class, deliberately diverging from <see cref="KeepAliveHandler"/>:
+    /// this echo is a liveness harness for the gameplay channel, not a
+    /// subsystem. It is replaced wholesale when the client↔zone
+    /// forwarding seam is built, and living here keeps it visibly
+    /// wiring-level. The routing, packet pair, and ID registration it
+    /// exercises are the permanent artifacts.
+    /// </remarks>
+    private static ValueTask OnGameDiagnosticPing(
+        UdpConnection connection, GameDiagnosticPingPacket packet)
+    {
+        connection.Send(new GameDiagnosticPongPacket(packet.Nonce));
+        return ValueTask.CompletedTask;
     }
 }
 

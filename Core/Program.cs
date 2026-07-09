@@ -23,7 +23,7 @@ internal static class Program
         DiskManager.Initialize();
         AccountStore.Initialize();
         CharacterStore.Initialize();
-
+       
         ReconcileLinks();
 
         try

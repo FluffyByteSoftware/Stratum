@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SystemTools\SystemTools.csproj" />
+    <ProjectReference Include="..\ZoneManager\ZoneManager.csproj" />
   </ItemGroup>
 
 </Project>

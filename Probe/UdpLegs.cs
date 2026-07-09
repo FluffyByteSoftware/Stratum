@@ -11,6 +11,7 @@ using LiteNetLib.Utils;
 using Shared.Networking;
 using Shared.Networking.Packets.Auth;
 using Shared.Networking.Packets.Comparable;
+using Shared.Networking.Packets.Diagnostics;
 using Shared.Networking.Packets.LifeCycle;
 using System.Buffers.Binary;
 
@@ -67,6 +68,18 @@ internal static class UdpLegs
         bool pingSent = false;
         bool pongReceived = false;
         long echoedTimestampMs = 0;
+        
+        // Leg 7 State.  The gameplay-channel diagnostic ping chains off the pong
+        // the same way the ping chained off the version result: fire the moment
+        // the prior leg closes, over the same peer.  The nonce is random rather
+        // than a timestamp - this leg proves 0x03 routing, not liveness
+        // and a random value makes an accidental echo-by-luck (stale buffer,
+        // wrong field) vanishingly unlikely.
+        long sentNonce = 0;
+        bool diagPingSent = false;
+        bool diagPongReceived = false;
+        long echoedNonce = 0;
+
 
         listener.PeerConnectedEvent += _ =>
             Console.WriteLine("    Connected; awaiting UDP auth ack.");
@@ -163,6 +176,33 @@ internal static class UdpLegs
                 }
                 echoedTimestampMs = payload.GetLong();
                 pongReceived = true;
+
+                // Leg 6 closed; fire leg 7 on the same peer.
+                sentNonce = Random.Shared.NextInt64();
+
+                SendUdpPacket(peer,
+                    new GameDiagnosticPingPacket(sentNonce));
+
+                diagPingSent = true;
+
+                Console.WriteLine(
+                    $"    OK    [7] Diagnostic ping sent (nonce={sentNonce}).");
+                Console.WriteLine("Awaiting 0x03 echo...");
+
+                return;
+            }
+
+            if (typeId == MessagePacketIds.ZoneDataMessage.Pong && diagPingSent)
+            {
+                if (payload.AvailableBytes < sizeof(long))
+                {
+                    Console.WriteLine(
+                        "    Diagnostic pong payload too short; dropping.");
+                    return;
+                }
+
+                echoedNonce = payload.GetLong();
+                diagPongReceived = true;
                 return;
             }
 
@@ -185,7 +225,7 @@ internal static class UdpLegs
             client.PollEvents();
             Thread.Sleep(15);
 
-            if (pongReceived)
+            if (diagPongReceived)
                 break;
 
             if (versionChecked && !pingSent)
@@ -246,6 +286,25 @@ internal static class UdpLegs
 
         Console.WriteLine(
             $"    OK    [6] Keep-alive echo verified (ts={echoedTimestampMs}).");
+
+        Console.WriteLine("         [7] Gameplay channel diagnostic echo...");
+
+        if (!diagPongReceived)
+        {
+            Console.WriteLine(
+                "   FAIL [7] No diagnostic echo received (timed out).");
+            return;
+        }
+
+        if(echoedNonce != sentNonce)
+        {
+            Console.WriteLine(
+                $"    FAIL  [7] Diagnostic echo mismatch: sent {sentNonce}, " +
+                $"got {echoedNonce}.");
+            return;
+        }
+
+        Console.WriteLine("[7] Gameplay Diagnostic successful.");
     }
 
     // Serializes and sends a single UDP packet to a peer with the 4-byte
