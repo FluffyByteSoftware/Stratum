@@ -10,6 +10,7 @@ using SystemTools.Accounts;
 using SystemTools.Characters;
 using SystemTools.Logger;
 using SystemTools.Storage;
+using Game.Living.Characters;
 
 namespace Core;
 
@@ -23,8 +24,11 @@ internal static class Program
         DiskManager.Initialize();
         AccountStore.Initialize();
         CharacterStore.Initialize();
-       
+        SpeciesStore.Initialize();
+        
         ReconcileLinks();
+
+        ResolveCharacterSpecies();
 
         try
         {
@@ -257,6 +261,54 @@ internal static class Program
         Console.WriteLine("  6) List Accounts");
         Console.WriteLine("  0) Quit");
         Console.Write("> ");
+    }
+
+    /// <summary>
+    /// Checks every loaded character's species against the loaded species
+    /// definitions, once at startup, after both stores have booted.
+    /// </summary>
+    /// <remarks>
+    /// Runs here for the same reason <see cref="ReconcileLinks"/> does: it
+    /// depends on two stores being loaded, which neither can guarantee from
+    /// inside its own boot. A character naming a species with no definition
+    /// on disk is a content gap the admin should see at boot, not a crash
+    /// waiting for the first system that reads the definition.
+    /// </remarks>
+    private static void ResolveCharacterSpecies()
+    {
+        var species = SpeciesStore.Instance;
+        var characters = CharacterStore.Instance;
+
+        int resolved = 0;
+        int unresolved = 0;
+
+        foreach (var name in characters.ListNames())
+        {
+            if (!characters.TryGet(name, out var record))
+                continue;
+
+            if (species.TryGet(record.Species, out var definition))
+            {
+                resolved++;
+                Scribe.Pump(new ScribeMessage(ScribeSeverity.Info,
+                    $"Character '{name}' species resolved: "
+                        + $"{record.Species} -> '{definition.Name}', "
+                        + $"{definition.Limbs.Count} limbs."));
+            }
+            else
+            {
+                unresolved++;
+                Scribe.Pump(new ScribeMessage(ScribeSeverity.Warn,
+                    $"Character '{name}' has species "
+                        + $"'{record.Species}' but no definition is "
+                        + "loaded for it."));
+            }
+        }
+
+        Console.WriteLine(
+            $"Species resolve: {resolved} resolved, "
+                + $"{unresolved} unresolved of "
+                + $"{species.Count} definition(s) loaded.");
     }
 }
 /*

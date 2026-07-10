@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Game\Game.csproj" />
     <ProjectReference Include="..\SystemTools\SystemTools.csproj" />
     <ProjectReference Include="..\ZoneManager\ZoneManager.csproj" />
   </ItemGroup>

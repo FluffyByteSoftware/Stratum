@@ -53,6 +53,14 @@ public readonly record struct Limb
     /// </summary>
     [JsonPropertyName("size")]
     public int Size { get; init; }
+
+    /// <summary>
+    /// Indicates the amount of damage to modify when this limb is hit.
+    /// A lower integer value means less damage, and a higher integer 
+    /// value means more damage.
+    /// </summary>
+    [JsonPropertyName("damageModifier")]
+    public float DamageModifier { get; init; }
 }
 
 /*
