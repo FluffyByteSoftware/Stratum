@@ -13,6 +13,7 @@ using SystemTools.Logger;
 using SystemTools.Security;
 using SystemTools.Storage;
 using ZoneManager.Registration;
+using ZoneManager.Zones;
 
 namespace ZoneManager;
 
@@ -64,6 +65,8 @@ internal static class Program
     {
         DiskManager.Initialize();
 
+        ZoneStore.Initialize();
+
         try
         {
             _registrationPublicKey =
@@ -94,6 +97,9 @@ internal static class Program
         {
             if (_host is not null)
                 await _host.StopAsync();
+
+            if (ZoneStore.IsRunning)
+                await ZoneStore.Instance.ShutdownAsync();
 
             await Scribe.ShutdownAsync();
 

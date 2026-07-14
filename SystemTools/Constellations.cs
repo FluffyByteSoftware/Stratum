@@ -78,9 +78,6 @@ public static class Constellations
         Path.Combine(DataRoot, "zones");
 }
 
-
-
-
 /*
  *------------------------------------------------------------
  * (Constellations.cs)
