@@ -67,6 +67,15 @@ public static class Constellations
     /// disk.</remarks>
     public static readonly string SpeciesConfigPath =
         Path.Combine(DataRoot, @"game/species");
+
+    /// <summary>
+    /// Path to the zones directory under the data root. Each child
+    /// directory is one zone, declared by the <c>manifest.json</c> it
+    /// contains; ZoneManager's boot scan discovers zones by walking
+    /// this directory.
+    /// </summary>
+    public static readonly string ZonesPath =
+        Path.Combine(DataRoot, "zones");
 }
 
 
