@@ -4,7 +4,7 @@
 //!
 //! Entry point.  Core is the driver: it starts up, brings the other pieces
 //! online in order, and gets the game ready for play.  Right now the pieces
-//! are Scribe, Constellations and DiskMan.
+//! are Scribe, Constellations, Security, Account, and DiskMan.
 
 // Rust note: `mod scribe;` tells the compiler that src/scribe.rs is part of
 // this program.  A file that isn't named like this doesn't get compiled at
@@ -13,6 +13,7 @@ mod scribe;
 mod constellations;
 mod diskman;
 mod security;
+mod account;
 
 use scribe::{Channel, ScribeConfig};
 
@@ -35,9 +36,19 @@ fn main() {
     let settings = constellations::get();
     scribe::info(Channel::Core, &format!("TCP will listen on {}:{}",
                                          settings.tcp_host_address, settings.tcp_port));
-    
-    scribe::info(Channel::Core, "Nothing else to start yet.  Shutting down.");
 
+
+    // Which usernames and character names are already taken.  If the account
+    // folder can't be read we can't tell, and nothing after this is safe.
+    if !account::start() {
+        scribe::error(Channel::Core, "Can't go on without the account folder.  Shutting down.");
+        constellations::save();
+        diskman::stop();
+        std::process::exit(1);
+    }
+
+    scribe::info(Channel::Core, "Shutting down...");
+    
     // Last thing on the way out: whatever settings are in memory go back to
     // the config file.
     constellations::save();
