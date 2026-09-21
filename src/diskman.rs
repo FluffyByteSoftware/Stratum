@@ -1040,9 +1040,10 @@ mod tests {
 
     /// The same temp-and-rename, minus both syncs.  The floor we can't beat.
     fn bench_no_sync(folder: &Path, pass: u32) {
-        let files = bench_files(folder, &format!("nosync{}", pass), BENCH_SAVES);
+        let files = 
+            bench_files(folder, &format!("nosync{}", pass), BENCH_SAVES);
 
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         for file in &files {
             let temp_path = temp_path_for(&file.path);
             fs::write(&temp_path, &file.contents).unwrap();
@@ -1062,7 +1063,7 @@ mod tests {
                                 BENCH_SAVES);
         let per_thread = files.len().div_ceil(threads);
 
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         std::thread::scope(|scope| {
             for chunk in files.chunks(per_thread) {
                 scope.spawn(move || {
@@ -1090,7 +1091,7 @@ mod tests {
                                 BENCH_SAVES);
         let per_thread = files.len().div_ceil(threads);
 
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         std::thread::scope(|scope| {
             for chunk in files.chunks(per_thread) {
                 scope.spawn(move || {
