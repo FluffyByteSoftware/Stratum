@@ -64,7 +64,6 @@ fn config_path() -> PathBuf {
 // nobody reads, so we tell it to be quiet.
 // Rust note: `Clone` is what lets get() hand out a copy of the whole struct.
 // `PartialEq` lets the tests compare two of them with `==`.
-#[allow(dead_code)]
 #[derive(Clone, PartialEq)]
 pub struct Settings {
     /// The biggest a log file gets before Scribe starts a new one, in MB.

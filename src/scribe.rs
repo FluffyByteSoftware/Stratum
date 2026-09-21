@@ -40,7 +40,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // Rust note: `#[derive(...)]` asks the compiler to write the boring code for
 // us.  `Clone, Copy` means a Priority gets copied around like an int in C,
 // and `PartialEq` is what lets us compare two of them with `==`.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum Priority {
     Debug,
@@ -51,7 +50,6 @@ pub enum Priority {
 
 /// Which part of the server a message came from.  These six are the starting
 /// set.  We will probably add more later.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum Channel {
     World,
@@ -64,7 +62,6 @@ pub enum Channel {
 
 /// The terminal colors a priority can be given.  Which priority gets which
 /// is set in the config file.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum Color {
     Gray,
@@ -246,13 +243,11 @@ pub fn initialize(config: ScribeConfig) {
     log(Priority::Info, Channel::Core, "Scribe has its settings from the config file.");
 }
 
-#[allow(dead_code)]
 #[track_caller]
 pub fn debug(channel: Channel, message: &str) {
     log(Priority::Debug, channel, message);
 }
 
-#[allow(dead_code)]
 #[track_caller]
 pub fn info(channel: Channel, message: &str) {
     log(Priority::Info, channel, message);

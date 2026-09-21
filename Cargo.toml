@@ -4,3 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+argon2 = "0.6"
+
+# Argon2 is slow on purpose, but a debug build makes it slow by accident too
+# -- about 20 times slower.  These two lines build argon2 and blake2 (the
+# hash it is made of) optimized, even in a debug build, so `cargo run` and
+# `cargo test` hash at the speed the real server will.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

@@ -12,6 +12,7 @@
 mod scribe;
 mod constellations;
 mod diskman;
+mod security;
 
 use scribe::{Channel, ScribeConfig};
 
