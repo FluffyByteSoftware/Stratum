@@ -6,14 +6,15 @@ Stratum Core is a game server written in Rust.  It is the authority for a small-
 
 ## State of things
 
-This is a hobby project by one person, and it has just started.  What exists today is the logger and the config file.  That is the whole server right now: it starts, reads its settings, logs a few lines, saves its settings and shuts down.  Nothing listens on a port yet.  Things will be missing, things will break, and things will change.
+This is a hobby project by one person, and it has just started.  What exists today is the logger, the config file and the thing that writes files to disk.  That is the whole server right now: it starts, reads its settings, logs a few lines, saves its settings and shuts down.  Nothing listens on a port yet.  Things will be missing, things will break, and things will change.
 
 ## What works
 
 - **Scribe**, the logger.  Anything in the server can call it.  Messages go to the terminal in color and to a log file that starts fresh every day (or sooner, if it gets too big).  Every message carries a priority (Debug, Info, Warn, Error), a channel that says which part of the server it came from, and the file and line number that logged it.
 - **Constellations**, the configuration.  It reads a plain `KEY=VALUE` config file at launch and keeps the settings where anything in the server can get at them.  If there is no file, it writes one with the defaults in it.  A bad value gets a warning in the log and falls back to its default -- it never stops the server.  At shutdown the settings in memory are written back to the file.
+- **DiskMan**, the Disk Manager.  Every file the server replaces goes through it.  It writes a temp file, forces it onto the disk, renames it over the old one, then forces the folder onto the disk too, so neither a crash nor a power cut can leave half a file behind.  Saves that the game can't wait on go into a cache, and a background thread writes them out in batches.  On a spinning disk, 50 saves take about half a second that way, and the game never waits for any of it.
 
-Both are standard library only.
+All three are standard library only.
 
 ## The plan, briefly
 
@@ -21,7 +22,7 @@ Both are standard library only.
 - Built for about 50 players at peak.  This is not an MMO.
 - The world is chunked into zones and generated procedurally.
 - Everything is saved to flat files in the LPC tradition.  No database.
-- Whole files are never written in place.  We write a temp file and rename it over the old one, so a crash halfway through a save can't eat anything.
+- Whole files are never written in place.  A crash rolls players back to their last save that made it to the disk.  It never corrupts one.
 - All time is UTC, and any time we display has a Z on the end.
 - As few dependencies as we can get away with.  So far that is none.
 
@@ -32,6 +33,12 @@ You need Rust (edition 2024, so 1.85 or newer).  Then:
 ```
 cargo run
 cargo test
+```
+
+There is also a benchmark that times 50 saves on whatever drive `/opt/stratum` lives on.  It isn't part of a normal `cargo test`:
+
+```
+cargo test fifty_saves -- --ignored --nocapture
 ```
 
 The server keeps its files under `/opt/stratum/content/` -- logs in `logs/`, the config file in `config/` -- and on most Linux machines `/opt` belongs to root.  Either hand the folder to your own user first:
@@ -65,7 +72,8 @@ Two things to know.  The built-in defaults are the author's dev machine right no
 ├── src/
 │   ├── main.rs             Entry point.  Starts the pieces in order.
 │   ├── scribe.rs           Scribe, the logger.
-│   └── constellations.rs   Constellations, the configuration.
+│   ├── constellations.rs   Constellations, the configuration.
+│   └── diskman.rs          DiskMan, the Disk Manager.
 └── ai/                     The project paperwork (see below).
 ```
 

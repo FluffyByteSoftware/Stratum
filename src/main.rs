@@ -4,13 +4,14 @@
 //!
 //! Entry point.  Core is the driver: it starts up, brings the other pieces
 //! online in order, and gets the game ready for play.  Right now the pieces
-//! are Scribe and Constellations, so this is short.
+//! are Scribe, Constellations and DiskMan.
 
 // Rust note: `mod scribe;` tells the compiler that src/scribe.rs is part of
 // this program.  A file that isn't named like this doesn't get compiled at
 // all, no matter what folder it is sitting in.
 mod scribe;
 mod constellations;
+mod diskman;
 
 use scribe::{Channel, ScribeConfig};
 
@@ -20,6 +21,10 @@ fn main() {
     // Scribe first, so that everything after it has somewhere to complain.
     scribe::start();
 
+    // Then DiskMan's writer thread, so anything that saves from here on has
+    // somewhere to put it.
+    diskman::start();
+    
     // Then the settings.  Scribe had to come up on its built-in defaults,
     // because it has to be there before Constellations is.  Now that the
     // config file is loaded, Scribe gets the real ones.
@@ -35,6 +40,10 @@ fn main() {
     // Last thing on the way out: whatever settings are in memory go back to
     // the config file.
     constellations::save();
+
+    // And the very last thing: DiskMan writes whatever it is still holding
+    // and waits until it is on the disk.
+    diskman::stop();
 }
 
 /// Hands Scribe its settings out of Constellations.  This lives here and not

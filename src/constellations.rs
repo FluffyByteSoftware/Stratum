@@ -19,6 +19,10 @@
 //!
 //!     let port = constellations::get().tcp_port;
 //!
+//! Constellations never touches the disk itself.  Reading and writing the
+//! file both go through DiskMan, which does the temp-file-and-rename dance
+//! and says what went wrong if anything does.
+//!
 //! The file gets written whole every time we save.  So a comment somebody
 //! added by hand is gone after the next shutdown, and so is any line we
 //! complained about at launch.  The values survive.  The decoration doesn't.
@@ -26,12 +30,12 @@
 //! Adding a setting means touching four places, all of them in this file: the
 //! Settings struct, default_settings(), apply_setting() and file_text().
 
-use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use crate::diskman::{self, StratumFile};
 use crate::scribe::{self, Channel, Color};
 
 // ---------------------------------------------------------------------------
@@ -45,11 +49,6 @@ const CONFIG_FOLDER: &str = "/opt/stratum/content/config";
 /// The general config file.  It gets a folder to itself because "general"
 /// suggests it won't be the only config file forever.
 const CONFIG_FILE_NAME: &str = "stratum.conf";
-
-/// What the file is called while we are still writing it.  It has to be in
-/// the same folder as the real one, because a rename only works within one
-/// disk.
-const TEMP_FILE_NAME: &str = "stratum.conf.tmp";
 
 fn config_path() -> PathBuf {
     PathBuf::from(CONFIG_FOLDER).join(CONFIG_FILE_NAME)
@@ -144,11 +143,12 @@ pub fn load() {
     let mut settings = default_settings();
     let mut file_unreadable = false;
 
-    match fs::read_to_string(&path) {
+    match diskman::read_text(&path) {
         Ok(text) => {
             let problems = parse_text(&text, &mut settings);
             for problem in &problems {
-                scribe::warn(Channel::Core, &format!("{}, {}", path.display(), problem));
+                scribe::warn(Channel::Core,
+                             &format!("{}, {}", path.display(), problem));
             }
             scribe::info(
                 Channel::Core,
@@ -161,15 +161,13 @@ pub fn load() {
             } else {
                 // The file is there and we can't read it (permissions, most
                 // likely).  We don't write over it, now or at shutdown.
-                // Somebody's settings are in there.
+                // Somebody's settings are in there.  DiskMan has already
+                // said why, so all we add is what happens next.
                 file_unreadable = true;
                 scribe::error(
                     Channel::Core,
-                    &format!(
-                        "Constellations can't read {} ({}).  Running on the built-in defaults.",
-                        path.display(),
-                        error
-                    ),
+                    "Constellations couldn't read the config file.  \
+                    Running on the built-in defaults.",
                 );
             }
         }
@@ -242,29 +240,27 @@ pub fn save() {
         scribe::warn(
             Channel::Core,
             &format!(
-                "Constellations never managed to read {}, so it is not going to write over it.  \
-                Settings not saved.",
+                "Constellations never managed to read {}, so it is not \
+                going to write over it.  Settings not saved.",
                 path.display()
             ),
         );
         return;
     }
 
-    match write_file(&path, &file_text(&constellations.settings)) {
+    match write_config_file(&constellations.settings) {
         Ok(()) => {
             scribe::info(
                 Channel::Core,
                 &format!("Constellations saved {}", path.display()),
             );
         }
-        Err(error) => {
+        Err(_) => {
+            // DiskMan has already logged what went wrong.
             scribe::error(
                 Channel::Core,
-                &format!(
-                    "Constellations can't save {} ({}).  The old file is still there.",
-                    path.display(),
-                    error
-                ),
+                "Constellations couldn't save the settings.  \
+                If there was a config file, it hasn't been touched.",
             );
         }
     }
@@ -498,20 +494,19 @@ fn file_text(settings: &Settings) -> String {
     text
 }
 
-/// Makes the config folder if it isn't there, then writes the file.  Any
-/// step failing comes back as the same kind of error.
-///
-/// We write to a temp file first and then rename it over the old one.  If the
-/// server dies halfway through a save, and we had been writing straight into
-/// the real file, then the next launch finds half a config.  This way the old
-/// file isn't touched until the new one is complete.
-fn write_file(path: &PathBuf, text: &str) -> io::Result<()> {
-    let temp_path = PathBuf::from(CONFIG_FOLDER).join(TEMP_FILE_NAME);
-
-    fs::create_dir_all(CONFIG_FOLDER)?;
-    fs::write(&temp_path, text)?;
-    fs::rename(&temp_path, path)?;
-    Ok(())
+/// Hands the settings to DiskMan as a complete config file.  DiskMan makes
+/// the folder if it has to, writes a temp file and renames it over the old
+/// one, so a save that dies halfway leaves the old file alone.  If anything
+/// fails, DiskMan logs it and we get the error back.
+// Rust note: `#[track_caller]` passes our caller's location through to
+// DiskMan's log lines, so they point at save() or write_default_file() and
+// not at this little function.
+#[track_caller]
+fn write_config_file(settings: &Settings) -> io::Result<()> {
+    diskman::write_file(&StratumFile {
+        path: config_path(),
+        contents: file_text(settings).into_bytes(),
+    })
 }
 
 /// There was no config file, so we make one.  If that fails too we say so
@@ -520,25 +515,23 @@ fn write_file(path: &PathBuf, text: &str) -> io::Result<()> {
 fn write_default_file(settings: &Settings) {
     let path = config_path();
 
-    match write_file(&path, &file_text(settings)) {
+    match write_config_file(settings) {
         Ok(()) => {
             scribe::info(
                 Channel::Core,
                 &format!(
-                    "No config file found, so Constellations wrote one with the defaults: {}",
+                    "No config file found, so Constellations wrote one with \
+                    the defaults: {}",
                     path.display()
                 ),
             );
         }
-        Err(error) => {
+        Err(_) => {
+            // DiskMan has already logged what went wrong.
             scribe::error(
                 Channel::Core,
-                &format!(
-                    "No config file found, and Constellations can't write {} ({}).  \
-                    Running on the built-in defaults.",
-                    path.display(),
-                    error
-                ),
+                "No config file found, and Constellations couldn't write one.  \
+                Running on the built-in defaults.",
             );
         }
     }
