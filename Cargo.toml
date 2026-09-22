@@ -19,4 +19,6 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
- 
+
+[profile.dev.package.ring]
+opt-level = 3

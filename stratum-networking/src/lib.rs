@@ -12,6 +12,7 @@
 //! the simulation.
 
 pub mod tcp;
+mod tls;
 
 /// Starts everything that listens.  An `Err` says, in words, what couldn't
 /// be started, and nothing is left running.

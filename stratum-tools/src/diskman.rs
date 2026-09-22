@@ -48,7 +48,8 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -394,6 +395,40 @@ pub fn write_file(file: &StratumFile) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// The same as write_file(), except only our own user can read or write the
+/// file afterwards (0600).  For the TLS key, and anything else that has no
+/// business being read by another user on the machine.
+///
+/// The trick is to make the temp file ourselves first, private from the
+/// moment it exists, and then let write_file() fill it.  Filling a file
+/// that is already there keeps its permissions, and so does the rename.
+/// So there is no moment where the key sits on the disk readable by
+/// anybody else.
+// Rust note: `.mode()` comes from OpenOptionsExt, which is Unix only.  It
+// sets the permissions a brand new file is made with.
+#[track_caller]
+pub fn write_private_file(file: &StratumFile) -> io::Result<()> {
+    let temp_path = temp_path_for(&file.path);
+
+    // A temp file left over from a crash would keep whatever permissions it
+    // was made with, so it goes first.
+    let _ = fs::remove_file(&temp_path);
+    let _ = fs::create_dir_all(folder_of(&file.path));
+
+    let made = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp_path);
+    if let Err(error) = made {
+        return Err(complain(&format!("DiskMan can't make the private file {}",
+                                     temp_path.display()),
+                            error));
+    }
+
+    write_file(file)
 }
 
 /// Deletes a file for good, and doesn't come back until the deletion is safe

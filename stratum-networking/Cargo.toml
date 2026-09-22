@@ -13,3 +13,13 @@ edition = "2024"
 
 [dependencies]
 stratum-tools = { path = "../stratum-tools" }
+
+# TLS, so a password never crosses the wire in the clear.  With ring for the
+# crypto: against aws-lc-rs it built in half the time, came out half the
+# size, and was a little faster.  TLS 1.3 only, which is why there is no
+# "tls12" here.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+
+# Makes the self-signed certificate and key the first time the server
+# starts.  Same crypto underneath as rustls, so it adds very little.
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
