@@ -4,7 +4,7 @@ Stratum is a game server written in Rust.  It is the authority for a small-scale
 
 ## State of things
 
-A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in stays connected, but there is nothing to do yet: no picking a character, no world, no UDP.  Things will be missing, things will break, and things will change.
+A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in sees their characters (three slots), and can make one, delete one, or pick one to play.  Picking one hands them a token for the UDP side -- which doesn't exist yet, so that is as far as anybody gets.  No world, no UDP.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
@@ -29,11 +29,12 @@ A Cargo workspace with four crates:
 │                           the config (Constellations), file writes (DiskMan),
 │                           passwords (Security), UUIDs (Fingerprinter) and
 │                           accounts.
-├── stratum-networking/     The TCP side (a listener, TLS and the login, so far)
-│                           and the UDP side (not written yet).
+├── stratum-networking/     The TCP side (a listener, TLS, the login and
+│                           character select, so far) and the UDP side (not
+│                           written yet).
 ├── stratum-game/           The game: what lives in the world, the character
-│                           files, and the character names.  The world itself
-│                           comes later.
+│                           files, the character names, and making and
+│                           deleting characters.  The world itself comes later.
 └── stratum-launcher/       The program: starts the tools, runs the admin's menu.
 ```
 
@@ -65,7 +66,7 @@ sudo chown -R $USER:$USER /opt/stratum
 
 The first run writes a config file to `/opt/stratum/content/config/stratum.conf`.  That path is fixed, even if `CONTENT_FOLDER` points somewhere else, because the config file can't tell us where the config file is.  Its built-in defaults are the author's dev machine for now, so the addresses will want changing: `TCP_HOST_ADDRESS` and `TCP_PORT` are what "Start server" listens on.  The server writes the file back out at every shutdown, so edit it while the server is stopped, or pick Reload in the menu before you quit.
 
-The first "Start server" also makes a TLS certificate and key in `saved/ssl/`.  `key.pem` is readable only by you, and should stay that way.  `cert.pem` is what a client needs a copy of.  The certificate is self-signed, so a client has to trust that exact file rather than asking anybody to vouch for it.  To check it from the command line:
+The first "Start server" also makes a TLS certificate and key in `saved/ssl/`.  `key.pem` is readable only by you, and should stay that way.  `cert.pem` is what a client needs a copy of -- including a friend's machine across the internet, which is where you find out you forgot.  The certificate is self-signed, so a client has to trust that exact file rather than asking anybody to vouch for it.  To check it from the command line:
 
 ```
 openssl s_client -connect <address>:<port> -CAfile /opt/stratum/content/saved/ssl/cert.pem </dev/null

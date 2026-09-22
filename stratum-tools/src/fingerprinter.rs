@@ -3,10 +3,10 @@
 //! Author:   Jacob Chacko
 //!
 //! Fingerprinter, the UUID maker.  Anything on the server that needs a name
-//! nothing else will ever have (an account, a character, later a login
-//! token) gets one from here.  It started life as a private function in
+//! nothing else will ever have (an account, a character, a login token)
+//! gets one from here.  It started life as a private function in
 //! account.rs, and moved out when the game needed it too.
-//!
+//! 
 //! A UUID here is 16 bytes from the kernel's random source, with two of
 //! them bent to mark it as a "version 4" (random) UUID, written in the
 //! usual dashed form:
@@ -24,12 +24,9 @@ use std::io::{self, Read};
 /// A new random UUID, in the usual form.  The only way it fails is if
 /// /dev/urandom can't be read, which means something is badly wrong with
 /// the machine.
-// TODO(tokens): the login tokens will need random bytes too.  When they
-// arrive, the /dev/urandom read becomes a function of its own in here, and
-// both use it.
 pub fn new_uuid() -> io::Result<String> {
     let mut bytes = [0u8; 16];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    random_bytes(&mut bytes)?;
 
     // The top four bits of byte 6 say the version (4).  The top two bits of
     // byte 8 say which UUID layout this is (the standard one).
@@ -45,6 +42,27 @@ pub fn new_uuid() -> io::Result<String> {
     }
     Ok(text)
 }
+
+/// A new login token: 32 random bytes, written as 64 lowercase hex
+/// characters.  Nothing about it means anything.  It only has to be
+/// impossible to guess.
+pub fn new_token() -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    random_bytes(&mut bytes)?;
+
+    let mut text = String::new();
+    for byte in bytes {
+        text.push_str(&format!("{:02x}", byte));
+    }
+    Ok(text)
+}
+
+/// Fills `bytes` from the kernel's random source.  The UUIDs and the tokens
+/// both come through here.
+fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
+    File::open("/dev/urandom")?.read_exact(bytes)
+}
+
 
 /// True for text in the shape of one of our UUIDs: 36 characters, lowercase
 /// hex, dashes in the right places, version 4.  It says nothing about
@@ -89,6 +107,16 @@ mod tests {
         assert_ne!(first, second);
     }
 
+    #[test]
+    fn tokens_look_right() {
+        let first = new_token().unwrap();
+        let second = new_token().unwrap();
+
+        assert_eq!(first.len(), 64);
+        assert!(first.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+        assert_ne!(first, second);
+    }
+    
     #[test]
     fn our_own_uuids_pass_the_shape_check() {
         for _ in 0..20 {

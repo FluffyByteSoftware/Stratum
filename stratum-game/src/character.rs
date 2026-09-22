@@ -38,8 +38,13 @@ use crate::player_file;
 /// `Err` is a message in words for whoever asked, and nothing is left
 /// behind: the name is free again and no file points anywhere.
 pub fn create_character(account: &mut Account, name: &str) -> Result<String, String> {
-    let name = names::check_character_name(name)?;
+    // A full account is turned away before the name is even looked at.
+    if account.characters.len() >= account::MAX_CHARACTERS {
+        return Err(format!("This account already has {} characters, \
+        which is the most there can be.", account::MAX_CHARACTERS));
+    }
 
+    let name = names::check_character_name(name)?;
     // Take the name first, so two characters being made at the same moment
     // can't both get it.  If anything after this fails, it goes back.
     names::reserve_name(&name)?;
@@ -119,4 +124,30 @@ pub fn delete_character(account: &mut Account, name: &str) -> Result<(), String>
     scribe::info(Channel::World, &format!("Character {} deleted from account {}.",
                                           account::display_name(&name), account.username));
     Ok(())
+}
+
+/// Checks that a character can be played: the account points at it, and
+/// its player file is there and can be trusted.  The network asks this
+/// before it hands a player a login token.  An `Err` is a message for the
+/// player.
+pub fn check_character(account: &Account, name: &str) -> Result<(), String> {
+    let name = name.to_ascii_lowercase();
+    let shown = account::display_name(&name);
+    let uuid = match account.characters.iter().find(|c| c.name == name) {
+        Some(character) => character.uuid.clone(),
+        None => return Err(format!("There is no character called {} on this account.", shown)),
+    };
+
+    match player_file::load(&account.username, &name, &uuid) {
+        Ok(Some(_)) => Ok(()),
+        // The account points at a file that isn't there.  A first save that
+        // never landed leaves exactly this, and nothing has said so yet.
+        Ok(None) => {
+            scribe::warn(Channel::World, &format!("Account {} points at {}, and {} has no player file.",
+                                                  account.username, shown, shown));
+            Err(format!("{} can't be played right now.  Tell an admin.", shown))
+        }
+        // load() has already logged what is wrong with it.
+        Err(_) => Err(format!("{} can't be played right now.  Tell an admin.", shown)),
+    }
 }

@@ -60,6 +60,9 @@ const MAX_REAL_NAME_CHARS: usize = 64;
 /// email standards themselves set.
 const MAX_EMAIL_CHARS: usize = 254;
 
+/// The most characters one account can have.
+pub const MAX_CHARACTERS: usize = 3;
+
 // ---------------------------------------------------------------------------
 // The account
 // ---------------------------------------------------------------------------

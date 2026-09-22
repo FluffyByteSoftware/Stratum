@@ -129,7 +129,14 @@ fn state_text(state: ServerState) -> &'static str {
 /// The terminal goes quiet only once the start has worked, so anything
 /// networking has to warn about on the way up still shows here.
 fn start_server() -> bool {
-    match stratum_networking::start() {
+    // The game's character functions, handed to networking, which can't
+    // see the game itself.
+    let calls = stratum_networking::CharacterCalls {
+        create: character::create_character,
+        delete: character::delete_character,
+        check: character::check_character,
+    };
+    match stratum_networking::start(calls) {
         Ok(()) => {
             scribe::info(Channel::Core, "Server started.");
             say("Server started.");

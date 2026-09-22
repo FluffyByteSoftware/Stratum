@@ -24,8 +24,9 @@
 //! Nothing in here logs or touches the network.  It turns packets into
 //! bytes and bytes back into packets, and that is what lets the tests run.
 
-/// The biggest length a frame is allowed to claim.  Plenty for a login,
-/// and it stops somebody claiming a 4 GB packet and making us wait for it.
+/// The biggest length a frame is allowed to claim.  Plenty for a login or a
+/// character list, and it stops somebody claiming a 4 GB packet and making
+/// us wait for it.
 pub const MAX_PACKET_BYTES: usize = 4096;
 
 /// What a client has to say before it gets to try a password.  Not real
@@ -37,16 +38,27 @@ pub const SECRET_WORD: &str = "potato";
 /// The first byte of an AuthenticationResult.
 pub const RESULT_SUCCESS: u8 = 0;
 pub const RESULT_AUTHENTICATION_FAILED: u8 = 1;
+/// The password was right, but the account is already logged in somewhere
+/// else.  The client asks the player what to do and answers with a
+/// SessionChoice.  Only ever sent after the right password, so it tells a
+/// stranger nothing.
+pub const RESULT_ALREADY_LOGGED_IN: u8 = 2;
 
 /// The string that rides along with each result, for the player to see.
 /// One failure message for everything, so a wrong secret word, a wrong name
 /// and a wrong password all look the same from outside.
 pub const SUCCESS_MESSAGE: &str = "Welcome to Stratum.";
 pub const FAILURE_MESSAGE: &str = "Invalid Credentials";
+pub const ALREADY_LOGGED_IN_MESSAGE: &str = "This account is already logged in.";
+
+/// The first byte of a CharacterResult.  Unlike the login, a refusal here
+/// comes with the real reason, because the player is already in.
+pub const CHARACTER_DONE: u8 = 0;
+pub const CHARACTER_REFUSED: u8 = 1;
 
 /// Every packet type there is so far.  The high four bits say the group and
-/// the low four say which one inside it.  0x1_ is Login.  CharacterSelect
-/// (0x2_) and Game (0x3_) come later.  0xF_ is for testing.
+/// the low four say which one inside it.  0x1_ is Login, 0x2_ is
+/// CharacterSelect, and Game (0x3_) comes later.  0xF_ is for testing.
 // Rust note: `repr(u8)` stores the enum as one byte, and `as u8` turns a
 // value back into its number, the same as a C# `enum : byte`.
 #[repr(u8)]
@@ -63,6 +75,29 @@ pub enum PacketType {
     AuthenticationRequest = 0x13,
     /// Server to client.  A result byte, then a string for the player.
     AuthenticationResult = 0x14,
+    /// Client to server, after an AuthenticationResult of 2.  One byte: 0
+    /// logs the other session out, 1 hangs this one up and leaves the other
+    /// alone.  (So a shared account doesn't kick your brother off because
+    /// you wanted to play.)
+    SessionChoice = 0x15,
+    /// Server to client, on the connection that just got logged out from
+    /// somewhere else.  No payload, and the server closes it straight after.
+    LoggedOutElsewhere = 0x16,
+    /// Server to client.  A byte for how many slots the account has, a byte
+    /// for how many characters are in them, then that many names.
+    CharacterList = 0x20,
+    /// Client to server.  One string: the new character's name.
+    CreateCharacter = 0x21,
+    /// Client to server.  One string: the name of the character to delete.
+    DeleteCharacter = 0x22,
+    /// Client to server.  One string: the name of the character to play.
+    EnterWorld = 0x23,
+    /// Server to client, after a create, a delete, or an EnterWorld that
+    /// didn't work.  A result byte, then a string for the player.
+    CharacterResult = 0x24,
+    /// Server to client, after an EnterWorld that did.  The login token (a
+    /// string), then the UDP port to take it to (a u16).
+    WorldTicket = 0x25,
     /// Either way, once logged in.  One string.  The server sends it
     /// straight back, which is how we test that both directions work.
     SimpleTcpMesg = 0xF0,
@@ -78,10 +113,27 @@ impl PacketType {
             0x12 => Some(PacketType::AwaitingAuthentication),
             0x13 => Some(PacketType::AuthenticationRequest),
             0x14 => Some(PacketType::AuthenticationResult),
+            0x15 => Some(PacketType::SessionChoice),
+            0x16 => Some(PacketType::LoggedOutElsewhere),
+            0x20 => Some(PacketType::CharacterList),
+            0x21 => Some(PacketType::CreateCharacter),
+            0x22 => Some(PacketType::DeleteCharacter),
+            0x23 => Some(PacketType::EnterWorld),
+            0x24 => Some(PacketType::CharacterResult),
+            0x25 => Some(PacketType::WorldTicket),
             0xF0 => Some(PacketType::SimpleTcpMesg),
             _ => None,
         }
     }
+}
+
+/// What the player picked when their account was already logged in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Choice {
+    /// Log the other session out and carry on with this one.
+    LogTheOtherOut,
+    /// Leave the other session alone and hang this one up.
+    Disconnect,
 }
 
 /// One whole packet, taken off the wire.  The type is kept as the raw byte,
@@ -193,6 +245,49 @@ pub fn authentication_result(success: bool, message: &str) -> Vec<u8> {
     frame(PacketType::AuthenticationResult, &payload)
 }
 
+/// An AuthenticationResult of 2: the password was right, and the account
+/// is already on somewhere else.
+pub fn already_logged_in() -> Vec<u8> {
+    let mut payload = vec![RESULT_ALREADY_LOGGED_IN];
+    put_string(&mut payload, ALREADY_LOGGED_IN_MESSAGE);
+    frame(PacketType::AuthenticationResult, &payload)
+}
+
+pub fn logged_out_elsewhere() -> Vec<u8> {
+    frame(PacketType::LoggedOutElsewhere, &[])
+}
+
+/// The characters on an account, by name, in the order they were made.
+/// The names go out the way the player should see them ("Aldric"), so every
+/// client shows them the same way.
+///
+/// The count is one byte, so a list longer than 255 would be cut short.
+/// With 3 slots it never gets near that.
+pub fn character_list(slots: u8, names: &[String]) -> Vec<u8> {
+    let count = names.len().min(u8::MAX as usize);
+    let mut payload = vec![slots, count as u8];
+    for name in names.iter().take(count) {
+        put_string(&mut payload, name);
+    }
+    frame(PacketType::CharacterList, &payload)
+}
+
+pub fn character_result(success: bool, message: &str) -> Vec<u8> {
+    let result = if success { CHARACTER_DONE } else { CHARACTER_REFUSED };
+    let mut payload = vec![result];
+    put_string(&mut payload, message);
+    frame(PacketType::CharacterResult, &payload)
+}
+
+/// The login token and where to take it.  The port rides along, so the
+/// client never has to be told it separately.
+pub fn world_ticket(token: &str, udp_port: u16) -> Vec<u8> {
+    let mut payload = Vec::new();
+    put_string(&mut payload, token);
+    payload.extend_from_slice(&udp_port.to_le_bytes());
+    frame(PacketType::WorldTicket, &payload)
+}
+
 pub fn simple_message(text: &str) -> Vec<u8> {
     let mut payload = Vec::new();
     put_string(&mut payload, text);
@@ -204,7 +299,8 @@ pub fn simple_message(text: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// The payload of a packet that holds one string and nothing else: a
-/// SecretWord or a SimpleTcpMesg.
+/// SecretWord, a CreateCharacter, a DeleteCharacter, an EnterWorld or a
+/// SimpleTcpMesg.
 pub fn read_one_string(payload: &[u8]) -> Result<String, String> {
     let mut at = 0;
     let text = take_string(payload, &mut at)?;
@@ -220,6 +316,16 @@ pub fn read_authentication_request(payload: &[u8]) -> Result<(String, String), S
     let password = take_string(payload, &mut at)?;
     finished(payload, at)?;
     Ok((username, password))
+}
+
+/// The payload of a SessionChoice: exactly one byte, 0 or 1.
+pub fn read_session_choice(payload: &[u8]) -> Result<Choice, String> {
+    match payload {
+        [0] => Ok(Choice::LogTheOtherOut),
+        [1] => Ok(Choice::Disconnect),
+        [other] => Err(format!("a session choice of {}, and only 0 and 1 mean anything", other)),
+        _ => Err(format!("a session choice of {} bytes, and it should be 1", payload.len())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +356,48 @@ mod tests {
         // string of 2.
         assert_eq!(authentication_result(false, "ab"),
                    vec![8, 0, 0, 0, 0x14, 1, 2, 0, 0, 0, b'a', b'b']);
+    }
+
+    #[test]
+    fn already_logged_in_is_result_two() {
+        let mut buffer = already_logged_in();
+        let packet = take_packet(&mut buffer).unwrap().unwrap();
+
+        assert_eq!(packet.kind, PacketType::AuthenticationResult as u8);
+        assert_eq!(packet.payload[0], RESULT_ALREADY_LOGGED_IN);
+        let mut at = 1;
+        assert_eq!(take_string(&packet.payload, &mut at), Ok(ALREADY_LOGGED_IN_MESSAGE.to_string()));
+        assert_eq!(finished(&packet.payload, at), Ok(()));
+    }
+
+    #[test]
+    fn a_character_list_in_bytes() {
+        // 3 slots, 2 characters.  The length is 15: the type, the two
+        // bytes, and two strings of 4 + 2.
+        let names = vec!["Ab".to_string(), "Cd".to_string()];
+        assert_eq!(character_list(3, &names),
+                   vec![15, 0, 0, 0, 0x20, 3, 2,
+                        2, 0, 0, 0, b'A', b'b',
+                        2, 0, 0, 0, b'C', b'd']);
+
+        // No characters yet is still a list: the slots, and a count of 0.
+        assert_eq!(character_list(3, &[]), vec![3, 0, 0, 0, 0x20, 3, 0]);
+    }
+
+    #[test]
+    fn a_world_ticket_in_bytes() {
+        // 9998 is 0x270E, so the port goes out as 0E 27.
+        assert_eq!(world_ticket("ab", 9998),
+                   vec![9, 0, 0, 0, 0x25, 2, 0, 0, 0, b'a', b'b', 0x0E, 0x27]);
+    }
+
+    #[test]
+    fn session_choices() {
+        assert_eq!(read_session_choice(&[0]), Ok(Choice::LogTheOtherOut));
+        assert_eq!(read_session_choice(&[1]), Ok(Choice::Disconnect));
+        assert!(read_session_choice(&[2]).is_err());
+        assert!(read_session_choice(&[]).is_err());
+        assert!(read_session_choice(&[0, 0]).is_err());
     }
 
     #[test]
@@ -335,11 +483,15 @@ mod tests {
     fn every_type_survives_its_byte() {
         let every = [PacketType::Hello, PacketType::SecretWord, PacketType::AwaitingAuthentication,
             PacketType::AuthenticationRequest, PacketType::AuthenticationResult,
+            PacketType::SessionChoice, PacketType::LoggedOutElsewhere,
+            PacketType::CharacterList, PacketType::CreateCharacter, PacketType::DeleteCharacter,
+            PacketType::EnterWorld, PacketType::CharacterResult, PacketType::WorldTicket,
             PacketType::SimpleTcpMesg];
         for kind in every {
             assert_eq!(PacketType::from_byte(kind as u8), Some(kind));
         }
         assert_eq!(PacketType::from_byte(0x00), None);
-        assert_eq!(PacketType::from_byte(0x15), None);
+        assert_eq!(PacketType::from_byte(0x17), None);
+        assert_eq!(PacketType::from_byte(0x26), None);
     }
 }
