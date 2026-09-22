@@ -22,6 +22,8 @@ All numbers are **little-endian** (lowest byte first).  That is what C#'s `Binar
 
 A **string** is a `u32` byte count, then that many bytes of UTF-8.  No terminating zero.
 
+An **`f32`** is a 4-byte float, the kind C#'s `BinaryReader.ReadSingle()` reads, lowest byte first like everything else.
+
 A payload with bytes left over after its last field is refused, the same as one that is cut short.
 
 ## Packet types
@@ -44,12 +46,13 @@ The high four bits are the group and the low four are the packet inside it.
 | 0x14 | AuthenticationResult | server to client | `u8` result, string message |
 | 0x15 | SessionChoice | client to server | `u8` choice |
 | 0x16 | LoggedOutElsewhere | server to client | none |
-| 0x20 | CharacterList | server to client | `u8` slots, `u8` count, then that many strings |
+| 0x20 | CharacterList | server to client | `u8` slots, `u8` count, then each character: string shortname, string longname, `u8` playable, `f32` x, y, z |
 | 0x21 | CreateCharacter | client to server | string name |
 | 0x22 | DeleteCharacter | client to server | string name |
 | 0x23 | EnterWorld | client to server | string name |
 | 0x24 | CharacterResult | server to client | `u8` result, string message |
 | 0x25 | WorldTicket | server to client | string token, `u16` UDP port |
+| 0x26 | RequestCharacterList | client to server | none |
 | 0xF0 | SimpleTcpMesg | either way | string |
 
 Every packet has its own section further down, with example bytes.
@@ -89,10 +92,11 @@ Once in, the player sees their characters and the empty slots, and can make a ch
 
 - **CreateCharacter** and **DeleteCharacter** each get a **CharacterResult** back.  On a success it is followed by a fresh CharacterList, so the client never has to work out the new list itself.  On a failure the message says why, in words the client can show as they are ("There is already a character called Aldric.").  Either way the connection stays open.
 - **EnterWorld** gets a **WorldTicket** back if the character can be played, and a CharacterResult with result 1 if it can't.
+- **RequestCharacterList** gets a fresh CharacterList, any time in character select.  The server also sends one on its own after the login and after every change, so a client only needs to ask when it wants to be sure.
 
 The server decides what characters an account has.  An account has 3 slots for now, and the server refuses a fourth character whatever the client shows.  The slot count rides in the CharacterList, so a client never needs it written in.
 
-Names go out the way the player should see them ("Aldric").  A name the client sends back can be in any case.  A character name is 4 to 12 letters, and no two characters on the server share one, whichever accounts they are on.
+Each character in the list has two names.  The **shortname** ("aldric", always lowercase) is what the client sends back to make, delete or play it, and a name the client sends back can be in any case.  The **longname** ("Aldric", or "Aldric the Unwashed") is what the player sees.  The list also says where each character is (a zone comes later), and whether it can be played at all.  A character whose file on the server is missing or damaged stays in the list, marked not playable, with its shortname capitalized as the longname and a position of 0, 0, 0.  The client tells the player to notify an admin, and the player can still delete it.  A character name is 4 to 12 letters, and no two characters on the server share one, whichever accounts they are on.
 
 Deleting takes only the name.  The client makes the player type the name out to confirm before it sends the packet.  The server doesn't ask for the password again.
 
@@ -173,11 +177,30 @@ Server to client, on the connection that just got logged out from somewhere else
 
 ### 0x20 CharacterList
 
-Server to client.  A `u8` for how many slots the account has, a `u8` for how many characters are in them, then each character's name as a string, in the order they were made.  3 slots, with Pooper and Poopy in two of them:
+Server to client.  A `u8` for how many slots the account has, a `u8` for how many characters are in them, then each character, in the order they were made:
+
+| Field | Type | |
+|---|---|---|
+| shortname | string | Lowercase.  What the client sends back. |
+| longname | string | What the player sees. |
+| playable | `u8` | 1 if it can be played, 0 if its file is missing or damaged. |
+| x, y, z | `f32` each | Where it is.  This becomes a zone and a position in it, later. |
+
+3 slots, with Pooper (playable, at 1.5, 0, 300.25) and Poopy (not playable) in two of them:
 
 ```text
-16 00 00 00  20  03  02  06 00 00 00  50 6F 6F 70 65 72  05 00 00 00  50 6F 6F 70 79
+43 00 00 00  20  03  02
+    06 00 00 00  70 6F 6F 70 65 72           "pooper"
+    06 00 00 00  50 6F 6F 70 65 72           "Pooper"
+    01                                       playable
+    00 00 C0 3F  00 00 00 00  00 20 96 43    1.5, 0, 300.25
+    05 00 00 00  70 6F 6F 70 79              "poopy"
+    05 00 00 00  50 6F 6F 70 79              "Poopy"
+    00                                       not playable
+    00 00 00 00  00 00 00 00  00 00 00 00    0, 0, 0
 ```
+
+That is a length of 67.  Each character is 4 + its shortname, 4 + its longname, 1, and 12.
 
 An account with no characters still gets a list: the slots, and a count of 0.
 
@@ -220,6 +243,14 @@ Server to client, after an EnterWorld that worked.  The login token (a string: 6
 That is a length of 71: the type, 4 for the string's length, 64 for the token, and 2 for the port.  `0E 27` is 9998.
 
 The token is how the UDP side will know who a packet is from.  It is made when the player picks a character, one per account, and a new one replaces the old.  It lives in the server's memory and nowhere else: for now it dies when the TCP connection closes, and every one of them dies on a restart.  The UDP side doesn't exist yet, so there is nowhere to take it.
+
+### 0x26 RequestCharacterList
+
+Client to server, in character select.  No payload.  "Send me my character list again."  The answer is a CharacterList.  A RequestCharacterList with anything in its payload closes the connection.
+
+```text
+01 00 00 00  26
+```
 
 ### 0xF0 SimpleTcpMesg
 

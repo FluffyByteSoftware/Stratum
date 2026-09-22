@@ -13,8 +13,8 @@
 //! the simulation.
 //!
 //! And this crate never depends on stratum-game.  Where it needs the
-//! game's code (making, deleting and checking a character), the Launcher,
-//! which can see both, hands it in at start().
+//! game's code (making, deleting, checking and listing characters), the
+//! Launcher, which can see both, hands it in at start().
 
 use stratum_tools::account::Account;
 
@@ -38,6 +38,29 @@ pub struct CharacterCalls {
     /// Says whether a character on the account can be played: it is there,
     /// and its file can be trusted.
     pub check: fn(&Account, &str) -> Result<(), String>,
+    /// Everything the character list shows about each character on the
+    /// account, in the order they were made.  A character whose file is
+    /// missing or damaged is still in it, marked as not playable, so the
+    /// player can see it and delete it.
+    pub list: fn(&Account) -> Vec<CharacterSummary>,
+}
+
+/// One character, the way the character list shows it.  The game fills it
+/// in from the player file (through the Launcher), and protocol.rs turns it
+/// into bytes.
+// TODO(zones): the position becomes a zone and a position inside it, once
+// there are zones.  That changes CharacterList's shape.
+pub struct CharacterSummary {
+    /// Lowercase.  What the client sends back to pick, delete or play it.
+    pub shortname: String,
+    /// What the player sees.  "Aldric", or "Aldric the Unwashed".
+    pub longname: String,
+    /// False when the player file is missing or can't be trusted.  The
+    /// client tells the player to notify an admin.
+    pub playable: bool,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 /// Starts everything that listens.  An `Err` says, in words, what couldn't

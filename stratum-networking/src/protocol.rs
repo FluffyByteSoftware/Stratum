@@ -24,6 +24,8 @@
 //! Nothing in here logs or touches the network.  It turns packets into
 //! bytes and bytes back into packets, and that is what lets the tests run.
 
+use crate::CharacterSummary;
+
 /// The biggest length a frame is allowed to claim.  Plenty for a login or a
 /// character list, and it stops somebody claiming a 4 GB packet and making
 /// us wait for it.
@@ -84,7 +86,9 @@ pub enum PacketType {
     /// somewhere else.  No payload, and the server closes it straight after.
     LoggedOutElsewhere = 0x16,
     /// Server to client.  A byte for how many slots the account has, a byte
-    /// for how many characters are in them, then that many names.
+    /// for how many characters are in them, then each character: its short
+    /// name, its long name, a byte saying whether it can be played, and
+    /// where it is.
     CharacterList = 0x20,
     /// Client to server.  One string: the new character's name.
     CreateCharacter = 0x21,
@@ -98,6 +102,9 @@ pub enum PacketType {
     /// Server to client, after an EnterWorld that did.  The login token (a
     /// string), then the UDP port to take it to (a u16).
     WorldTicket = 0x25,
+    /// Client to server. No payload. "Send me my character list again."
+    /// The server answers with a CharacterList.
+    RequestCharacterList = 0x26,
     /// Either way, once logged in.  One string.  The server sends it
     /// straight back, which is how we test that both directions work.
     SimpleTcpMesg = 0xF0,
@@ -121,6 +128,7 @@ impl PacketType {
             0x23 => Some(PacketType::EnterWorld),
             0x24 => Some(PacketType::CharacterResult),
             0x25 => Some(PacketType::WorldTicket),
+            0x26 => Some(PacketType::RequestCharacterList),
             0xF0 => Some(PacketType::SimpleTcpMesg),
             _ => None,
         }
@@ -257,17 +265,23 @@ pub fn logged_out_elsewhere() -> Vec<u8> {
     frame(PacketType::LoggedOutElsewhere, &[])
 }
 
-/// The characters on an account, by name, in the order they were made.
-/// The names go out the way the player should see them ("Aldric"), so every
-/// client shows them the same way.
+/// The characters on an account, in the order they were made.  Each one is
+/// its short name (what the client sends back to pick it), its long name
+/// (what the player sees), 1 if it can be played or 0 if its file is
+/// missing or damaged, and its position as three f32s.
 ///
 /// The count is one byte, so a list longer than 255 would be cut short.
 /// With 3 slots it never gets near that.
-pub fn character_list(slots: u8, names: &[String]) -> Vec<u8> {
-    let count = names.len().min(u8::MAX as usize);
+pub fn character_list(slots: u8, characters: &[CharacterSummary]) -> Vec<u8> {
+    let count = characters.len().min(u8::MAX as usize);
     let mut payload = vec![slots, count as u8];
-    for name in names.iter().take(count) {
-        put_string(&mut payload, name);
+    for character in characters.iter().take(count) {
+        put_string(&mut payload, &character.shortname);
+        put_string(&mut payload, &character.longname);
+        payload.push(if character.playable { 1 } else { 0 });
+        payload.extend_from_slice(&character.x.to_le_bytes());
+        payload.extend_from_slice(&character.y.to_le_bytes());
+        payload.extend_from_slice(&character.z.to_le_bytes());
     }
     frame(PacketType::CharacterList, &payload)
 }
@@ -372,13 +386,24 @@ mod tests {
 
     #[test]
     fn a_character_list_in_bytes() {
-        // 3 slots, 2 characters.  The length is 15: the type, the two
-        // bytes, and two strings of 4 + 2.
-        let names = vec!["Ab".to_string(), "Cd".to_string()];
-        assert_eq!(character_list(3, &names),
-                   vec![15, 0, 0, 0, 0x20, 3, 2,
+        // 3 slots, 1 character.  The length is 28: the type, the two
+        // bytes, two strings of 4 + 2, the playable byte, and three f32s.
+        let characters = vec![CharacterSummary {
+            shortname: "ab".to_string(),
+            longname: "Ab".to_string(),
+            playable: true,
+            x: 1.0,
+            y: 0.0,
+            z: -2.0,
+        }];
+        assert_eq!(character_list(3, &characters),
+                   vec![28, 0, 0, 0, 0x20, 3, 1,
+                        2, 0, 0, 0, b'a', b'b',
                         2, 0, 0, 0, b'A', b'b',
-                        2, 0, 0, 0, b'C', b'd']);
+                        1,
+                        0x00, 0x00, 0x80, 0x3F,
+                        0x00, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x00, 0xC0]);
 
         // No characters yet is still a list: the slots, and a count of 0.
         assert_eq!(character_list(3, &[]), vec![3, 0, 0, 0, 0x20, 3, 0]);
@@ -481,17 +506,27 @@ mod tests {
 
     #[test]
     fn every_type_survives_its_byte() {
-        let every = [PacketType::Hello, PacketType::SecretWord, PacketType::AwaitingAuthentication,
-            PacketType::AuthenticationRequest, PacketType::AuthenticationResult,
-            PacketType::SessionChoice, PacketType::LoggedOutElsewhere,
-            PacketType::CharacterList, PacketType::CreateCharacter, PacketType::DeleteCharacter,
-            PacketType::EnterWorld, PacketType::CharacterResult, PacketType::WorldTicket,
+        let every = [
+            PacketType::Hello,
+            PacketType::SecretWord,
+            PacketType::AwaitingAuthentication,
+            PacketType::AuthenticationRequest,
+            PacketType::AuthenticationResult,
+            PacketType::SessionChoice,
+            PacketType::LoggedOutElsewhere,
+            PacketType::CharacterList,
+            PacketType::CreateCharacter,
+            PacketType::DeleteCharacter,
+            PacketType::EnterWorld,
+            PacketType::CharacterResult,
+            PacketType::WorldTicket,
+            PacketType::RequestCharacterList,
             PacketType::SimpleTcpMesg];
         for kind in every {
             assert_eq!(PacketType::from_byte(kind as u8), Some(kind));
         }
         assert_eq!(PacketType::from_byte(0x00), None);
         assert_eq!(PacketType::from_byte(0x17), None);
-        assert_eq!(PacketType::from_byte(0x26), None);
+        assert_eq!(PacketType::from_byte(0x27), None);
     }
 }

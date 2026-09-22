@@ -242,7 +242,8 @@ pub fn stop() {
         }
         if started.elapsed() >= STOP_WAIT {
             scribe::warn(Channel::NetTcp,
-                         &format!("{} connection(s) still open after {} seconds.  Stopping anyway.",
+                         &format!("{} connection(s) still open after {} seconds.  \
+                         Stopping anyway.",
                                   still_open, STOP_WAIT.as_secs()));
             break;
         }
@@ -254,7 +255,10 @@ pub fn stop() {
 
 /// The listener thread.  Each connection gets a log line and a thread of
 /// its own, unless MAX_CONNECTIONS are already open.
-fn listen(listener: TcpListener, setup: Arc<Setup>, stopping: Arc<AtomicBool>, open: Arc<AtomicUsize>) {
+fn listen(listener: TcpListener,
+          setup: Arc<Setup>,
+          stopping: Arc<AtomicBool>,
+          open: Arc<AtomicUsize>) {
     // Set once we have said we are full, so a flood gets one Warn and not
     // one per connection.
     let mut said_full = false;
@@ -269,7 +273,8 @@ fn listen(listener: TcpListener, setup: Arc<Setup>, stopping: Arc<AtomicBool>, o
                     if !said_full {
                         said_full = true;
                         scribe::warn(Channel::NetTcp,
-                                     &format!("{} connections are open, which is the most we take.  \
+                                     &format!("{} connections are open, which is the \
+                                     most we take.  \
                                      Turning new ones away.", MAX_CONNECTIONS));
                     }
                     drop(stream);
@@ -484,7 +489,10 @@ fn converse(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, star
 
 /// Deals with one whole packet.  True to carry on, false when the
 /// connection should close.
-fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet: &Packet) -> bool {
+fn handle(stream: &mut TlsStream,
+          talk: &mut Conversation,
+          setup: &Setup,
+          packet: &Packet) -> bool {
     let peer = talk.peer;
     let kind = PacketType::from_byte(packet.kind);
 
@@ -500,14 +508,19 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
                 }
                 // What they sent instead isn't logged.  It could be anything.
                 _ => {
-                    scribe::info(Channel::NetTcp, &format!("{} didn't know the secret word.", peer));
+                    scribe::info(Channel::NetTcp,
+                                 &format!("{} didn't know the secret word.",
+                                          peer));
                     refuse(stream, peer);
                     false
                 }
             }
         }
 
-        (Stage::Credentials, Some(PacketType::AuthenticationRequest)) => credentials(stream, talk, packet),
+        (Stage::Credentials, Some(PacketType::AuthenticationRequest)) => credentials(stream,
+                                                                                     talk,
+                                                                                     setup,
+                                                                                     packet),
 
         (Stage::Choosing, Some(PacketType::SessionChoice)) => {
             talk.asked_at = None;
@@ -515,25 +528,46 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
                 Ok(Choice::LogTheOtherOut) => {
                     talk.claim = Some(sessions::take_over(&talk.username));
                     scribe::info(Channel::Security,
-                                 &format!("{} logged the other session on {} out.", peer, talk.username));
-                    welcome(stream, talk)
+                                 &format!("{} logged the other session on {} out.",
+                                          peer,
+                                          talk.username));
+                    welcome(stream, talk, setup)
                 }
                 Ok(Choice::Disconnect) => {
                     scribe::info(Channel::Security,
-                                 &format!("{} left the other session on {} alone and hung up.",
-                                          peer, talk.username));
+                                 &format!("{} left the other session on {} \
+                                 alone and hung up.",
+                                          peer,
+                                          talk.username));
                     false
                 }
                 Err(problem) => {
-                    scribe::info(Channel::NetTcp, &format!("{} sent {}.  Closing it.", peer, problem));
+                    scribe::info(Channel::NetTcp, &format!("{} sent {}.  \
+                    Closing it.",
+                                                           peer, problem));
                     false
                 }
             }
         }
 
-        (Stage::CharacterSelect, Some(PacketType::CreateCharacter)) => create(stream, talk, setup, packet),
-        (Stage::CharacterSelect, Some(PacketType::DeleteCharacter)) => delete(stream, talk, setup, packet),
-        (Stage::CharacterSelect, Some(PacketType::EnterWorld)) => enter_world(stream, talk, setup, packet),
+        (Stage::CharacterSelect, Some(PacketType::CreateCharacter)) => create(stream, talk, setup,
+                                                                              packet),
+        (Stage::CharacterSelect, Some(PacketType::DeleteCharacter)) => delete(stream, talk, setup,
+                                                                              packet),
+        (Stage::CharacterSelect, Some(PacketType::EnterWorld)) => enter_world(stream, talk, setup,
+                                                                              packet),
+        (Stage::CharacterSelect, Some(PacketType::RequestCharacterList)) => {
+            // No payload.  Anything in it means the client doesn't agree with
+            // us about the protocol, the same as leftover bytes anywhere else.
+            if !packet.payload.is_empty() {
+                scribe::info(Channel::NetTcp,
+                             &format!("{} sent a RequestCharacterList with {} byte(s) in \
+                             it.  Closing it.",
+                                      peer, packet.payload.len()));
+                return false;
+            }
+            send_list(stream, talk, setup)
+        }
 
         (Stage::CharacterSelect | Stage::InWorld, Some(PacketType::SimpleTcpMesg)) => {
             match protocol::read_one_string(&packet.payload) {
@@ -547,7 +581,8 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
                 }
                 Err(problem) => {
                     scribe::info(Channel::NetTcp,
-                                 &format!("{} sent a SimpleTcpMesg with {}.  Closing it.", peer, problem));
+                                 &format!("{} sent a SimpleTcpMesg with {}.  Closing it.",
+                                          peer, problem));
                     false
                 }
             }
@@ -558,7 +593,8 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
         // our shortcoming, not theirs.
         (Stage::CharacterSelect | Stage::InWorld, _) => {
             scribe::info(Channel::NetTcp,
-                         &format!("{} sent packet type 0x{:02X}, which we don't handle here.  Ignored it.",
+                         &format!("{} sent packet type 0x{:02X}, which we don't handle \
+                         here.  Ignored it.",
                                   peer, packet.kind));
             true
         }
@@ -568,7 +604,8 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
         // there is no hold.
         (Stage::Choosing, _) => {
             scribe::info(Channel::NetTcp,
-                         &format!("{} sent packet type 0x{:02X} instead of a session choice.  Closing it.",
+                         &format!("{} sent packet type 0x{:02X} instead of a session \
+                         choice.  Closing it.",
                                   peer, packet.kind));
             false
         }
@@ -576,7 +613,9 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
         // Anything else during the login is out of turn.
         (_, _) => {
             scribe::info(Channel::NetTcp,
-                         &format!("{} sent packet type 0x{:02X} out of turn.", peer, packet.kind));
+                         &format!("{} sent packet type 0x{:02X} out of turn.",
+                                  peer,
+                                  packet.kind));
             refuse(stream, peer);
             false
         }
@@ -589,7 +628,10 @@ fn handle(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet
 
 /// An AuthenticationRequest.  Checks the username and password, and either
 /// lets the player in, asks them about the other session, or refuses.
-fn credentials(stream: &mut TlsStream, talk: &mut Conversation, packet: &Packet) -> bool {
+fn credentials(stream: &mut TlsStream,
+               talk: &mut Conversation,
+               setup: &Setup,
+               packet: &Packet) -> bool {
     let peer = talk.peer;
 
     // The clock starts the moment the attempt is in, and every path below
@@ -604,15 +646,20 @@ fn credentials(stream: &mut TlsStream, talk: &mut Conversation, packet: &Packet)
 
     match (&request, &logged_in) {
         (Ok(_), Some(username)) => {
-            scribe::info(Channel::Security, &format!("{} logged in as {}.", peer, username));
+            scribe::info(Channel::Security, &format!("{} logged in as {}.",
+                                                     peer, username));
         }
         (Ok((username, _)), None) => {
             scribe::info(Channel::Security,
-                         &format!("Login from {} as {} failed.", peer, name_for_log(username)));
+                         &format!("Login from {} as {} failed.",
+                                  peer,
+                                  name_for_log(username)));
         }
         (Err(problem), _) => {
             scribe::info(Channel::Security,
-                         &format!("{} sent a login we couldn't read: {}.", peer, problem));
+                         &format!("{} sent a login we couldn't read: {}.",
+                                  peer,
+                                  problem));
         }
     }
 
@@ -625,11 +672,12 @@ fn credentials(stream: &mut TlsStream, talk: &mut Conversation, packet: &Packet)
     match sessions::claim(&talk.username) {
         Some(claim) => {
             talk.claim = Some(claim);
-            welcome(stream, talk)
+            welcome(stream, talk, setup)
         }
         None => {
             scribe::info(Channel::Security,
-                         &format!("{} is already on somewhere else.  Asking {} what to do.",
+                         &format!("{} is already on somewhere else.  \
+                         Asking {} what to do.",
                                   talk.username, peer));
             talk.stage = Stage::Choosing;
             talk.asked_at = Some(Instant::now());
@@ -657,19 +705,21 @@ fn log_in(username: &str, password: &str) -> Option<String> {
     // turning the player away over.
     if let Err(error) = account::record_login(&mut account) {
         scribe::warn(Channel::Security,
-                     &format!("Couldn't save the login time for {}: {}.  Letting them in anyway.",
+                     &format!("Couldn't save the login time for {}: {}.  Letting \
+                     them in anyway.",
                               account.username, error));
     }
     Some(account.username)
 }
 
 /// The player is in: the welcome, then their character list.
-fn welcome(stream: &mut TlsStream, talk: &mut Conversation) -> bool {
-    if send(stream, &protocol::authentication_result(true, protocol::SUCCESS_MESSAGE)).is_err() {
+fn welcome(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup) -> bool {
+    if send(stream, &protocol::authentication_result(true, protocol::SUCCESS_MESSAGE))
+        .is_err() {
         return false;
     }
     talk.stage = Stage::CharacterSelect;
-    send_list(stream, talk)
+    send_list(stream, talk, setup)
 }
 
 /// A username the way it goes in the log.  Only a name that follows the
@@ -687,7 +737,8 @@ fn name_for_log(username: &str) -> String {
 /// out of a failed login comes through here.
 fn refuse(stream: &mut TlsStream, peer: SocketAddr) {
     record_failure(peer.ip());
-    let _ = send(stream, &protocol::authentication_result(false, protocol::FAILURE_MESSAGE));
+    let _ = send(stream,
+                 &protocol::authentication_result(false, protocol::FAILURE_MESSAGE));
 }
 
 // ---------------------------------------------------------------------------
@@ -701,19 +752,26 @@ fn create(stream: &mut TlsStream, talk: &Conversation, setup: &Setup, packet: &P
     };
     let mut account = match current_account(talk) {
         Ok(account) => account,
-        Err(message) => return send(stream, &protocol::character_result(false, &message)).is_ok(),
+        Err(message) => return send(stream,
+                                    &protocol::character_result(false, &message))
+            .is_ok(),
     };
 
     match (setup.calls.create)(&mut account, &name) {
         // The game logs the new character itself.
         Ok(_) => {
-            let message = format!("{} made.", account::display_name(&name.to_ascii_lowercase()));
-            send(stream, &protocol::character_result(true, &message)).is_ok() && send_list(stream, talk)
+            let message = format!("{} made.",
+                                  account::display_name(&name.to_ascii_lowercase()));
+            send(stream, &protocol::character_result(true, &message))
+                .is_ok() && send_list(stream, talk, setup)
         }
         Err(message) => {
             // `{:?}`, because the message can quote what the player typed.
             scribe::info(Channel::NetTcp,
-                         &format!("{} on {} couldn't make a character: {:?}", talk.peer, talk.username, message));
+                         &format!("{} on {} couldn't make a character: {:?}",
+                                  talk.peer,
+                                  talk.username,
+                                  message));
             send(stream, &protocol::character_result(false, &message)).is_ok()
         }
     }
@@ -728,18 +786,25 @@ fn delete(stream: &mut TlsStream, talk: &Conversation, setup: &Setup, packet: &P
     };
     let mut account = match current_account(talk) {
         Ok(account) => account,
-        Err(message) => return send(stream, &protocol::character_result(false, &message)).is_ok(),
+        Err(message) => return send(stream,
+                                    &protocol::character_result(false, &message))
+            .is_ok(),
     };
 
     match (setup.calls.delete)(&mut account, &name) {
         // The game logs the deletion itself.
         Ok(()) => {
-            let message = format!("{} deleted.", account::display_name(&name.to_ascii_lowercase()));
-            send(stream, &protocol::character_result(true, &message)).is_ok() && send_list(stream, talk)
+            let message = format!("{} deleted.",
+                                  account::display_name(&name.to_ascii_lowercase()));
+            send(stream, &protocol::character_result(true, &message))
+                .is_ok() && send_list(stream, talk, setup)
         }
         Err(message) => {
             scribe::info(Channel::NetTcp,
-                         &format!("{} on {} couldn't delete a character: {:?}", talk.peer, talk.username, message));
+                         &format!("{} on {} couldn't delete a character: {:?}",
+                                  talk.peer,
+                                  talk.username,
+                                  message));
             send(stream, &protocol::character_result(false, &message)).is_ok()
         }
     }
@@ -748,13 +813,16 @@ fn delete(stream: &mut TlsStream, talk: &Conversation, setup: &Setup, packet: &P
 /// An EnterWorld.  Checks the character can be played, makes the login
 /// token, and sends it with the UDP port.  The token itself is never
 /// logged.
-fn enter_world(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, packet: &Packet) -> bool {
+fn enter_world(stream: &mut TlsStream, talk: &mut Conversation,
+               setup: &Setup, packet: &Packet) -> bool {
     let Some(name) = one_name(talk, packet) else {
         return false;
     };
     let account = match current_account(talk) {
         Ok(account) => account,
-        Err(message) => return send(stream, &protocol::character_result(false, &message)).is_ok(),
+        Err(message) => return send(stream,
+                                    &protocol::character_result(false, &message))
+            .is_ok(),
     };
 
     if let Err(message) = (setup.calls.check)(&account, &name) {
@@ -813,17 +881,19 @@ fn current_account(talk: &Conversation) -> Result<Account, String> {
     }
 }
 
-/// Sends the character list: how many slots, and the names in them.
-fn send_list(stream: &mut TlsStream, talk: &Conversation) -> bool {
+/// Sends the character list: how many slots, and everything the list
+/// shows about each character in them.  The game reads the player files
+/// (the `list` call), since this crate can't.
+fn send_list(stream: &mut TlsStream, talk: &Conversation, setup: &Setup) -> bool {
     let account = match current_account(talk) {
         Ok(account) => account,
-        Err(message) => return send(stream, &protocol::character_result(false, &message)).is_ok(),
+        Err(message) => return send(stream,
+                                    &protocol::character_result(false, &message))
+            .is_ok(),
     };
-    let names: Vec<String> = account.characters.iter()
-        .map(|character| account::display_name(&character.name))
-        .collect();
+    let characters = (setup.calls.list)(&account);
     let slots = account::MAX_CHARACTERS.min(u8::MAX as usize) as u8;
-    send(stream, &protocol::character_list(slots, &names)).is_ok()
+    send(stream, &protocol::character_list(slots, &characters)).is_ok()
 }
 
 // ---------------------------------------------------------------------------

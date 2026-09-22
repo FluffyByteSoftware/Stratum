@@ -27,6 +27,8 @@ use stratum_tools::scribe::{self, Channel};
 use stratum_tools::security;
 use stratum_networking;
 use stratum_game::character;
+use stratum_game::player_file;
+use stratum_networking::CharacterSummary;
 
 /// Where the server is in its life.  It decides what S says and whether Q is
 /// on the menu.
@@ -135,6 +137,7 @@ fn start_server() -> bool {
         create: character::create_character,
         delete: character::delete_character,
         check: character::check_character,
+        list: list_characters,
     };
     match stratum_networking::start(calls) {
         Ok(()) => {
@@ -149,6 +152,37 @@ fn start_server() -> bool {
             false
         }
     }
+}
+
+/// What the character list shows for each character on an account, for
+/// networking, which can't read a player file itself.  A character whose
+/// file is missing or damaged still goes in, marked as not playable, so
+/// the player can see it and delete it.  load() has already logged a
+/// damaged one.
+fn list_characters(account: &Account) -> Vec<CharacterSummary> {
+    let mut list = Vec::new();
+    for character in &account.characters {
+        let summary = match player_file::load(&account.username, &character.name, &character.uuid) {
+            Ok(Some(file)) => CharacterSummary {
+                shortname: character.name.clone(),
+                longname: file.longname,
+                playable: true,
+                x: file.position.x,
+                y: file.position.y,
+                z: file.position.z,
+            },
+            _ => CharacterSummary {
+                shortname: character.name.clone(),
+                longname: account::display_name(&character.name),
+                playable: false,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        list.push(summary);
+    }
+    list
 }
 
 /// Stops networking.  The terminal comes back first, so a warning from the
