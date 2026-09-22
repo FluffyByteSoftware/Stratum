@@ -1,4 +1,4 @@
-//! File:     src/diskman.rs
+//! File:     stratum-tools/src/diskman.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
 //!
@@ -253,7 +253,6 @@ pub fn stop() {
 /// Waits until everything in the cache has been written (or dropped).  The
 /// server keeps running and the writer keeps going.  Nothing calls this yet
 /// -- it is for things like an admin "save everything now".
-#[allow(dead_code)]
 pub fn flush() {
     let mut guard = CACHE.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -283,7 +282,6 @@ pub fn flush() {
 // Rust note: this takes the StratumFile itself and not a `&` to it, so the
 // bytes move into the cache without being copied.  The caller can't use the
 // file after handing it over, and the compiler will say so if they try.
-#[allow(dead_code)]
 #[track_caller]
 pub fn write_later(file: StratumFile) {
     let mut guard = CACHE.lock()
@@ -339,7 +337,7 @@ pub fn write_later(file: StratumFile) {
 /// A `.tmp` left behind by an earlier crash doesn't matter.  Creating the
 /// temp file wipes whatever was in it.
 // Rust note: `#[track_caller]` here passes the caller's location on to
-// Scribe, so an error line says `(src/constellations.rs:253)` and not
+// Scribe, so an error line says `(stratum-tools/src/constellations.rs:253)` and not
 // somewhere in this file.  Every function between the caller and Scribe has
 // to carry it, which is why complain() does too.
 #[track_caller]
@@ -750,7 +748,6 @@ fn cache_finish_batch(cache: &mut Cache, batch: &[BatchItem]) {
 /// and nothing is logged.  Any other failure is logged and handed back.
 // Rust note: `&Path` is a borrowed path.  A `&PathBuf` can be passed in
 // here as it is -- the compiler turns one into the other for us.
-#[allow(dead_code)]
 #[track_caller]
 pub fn read_file(path: &Path) -> io::Result<StratumFile> {
     let contents = match cached_copy(path) {
@@ -1096,6 +1093,36 @@ mod tests {
     const BENCH_SAVES: usize = 50;
     const BENCH_BYTES: usize = 8 * 1024;
 
+    #[test]
+    fn a_private_file_is_private_from_the_start() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder = test_folder("private");
+        let path = folder.join("key.pem");
+        let temp_path = temp_path_for(&path);
+
+        // What a crash would leave behind, with the ordinary permissions a
+        // plain `fs::write()` hands out.  The private write has to throw it
+        // away rather than fill it, or the key inherits 0644.
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(&temp_path, "an old half-written key").unwrap();
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private_file(&StratumFile {
+            path: path.clone(),
+            contents: b"the key".to_vec(),
+        }).unwrap();
+
+        // `.mode()` carries the file type in its high bits, so mask down to
+        // the permission bits before comparing.
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(read_text(&path).unwrap(), "the key");
+        assert!(!temp_path.exists());
+
+        let _ = fs::remove_dir_all(&folder);
+    }
+    
     /// Times 50 player-sized saves, several ways, on the real drive.  Not part
     /// of a normal `cargo test` -- run it by hand:
     ///

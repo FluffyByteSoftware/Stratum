@@ -1,4 +1,4 @@
-//! File:     src/launcher.rs
+//! File:     stratum-launcher/src/launcher.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
 //!
@@ -6,19 +6,21 @@
 //! hands the terminal over to `launcher::run()`, and when that returns, the
 //! server shuts down properly.  So Q is how the server gets stopped.
 //!
-//! While the menu is up, Scribe stays out of this terminal.  The log gets
-//! its own window instead, opened with LOG_WINDOW_COMMAND from the config
-//! file (`konsole -e` on the dev machine) running `tail -F` on the log.
+//! The log lives in a file, and the menu can show the end of it (L).  Until
+//! the server is started, Scribe's warnings and errors still print here,
+//! since the admin is the one who should see them.  Once it is running the
+//! terminal goes quiet, so fifty connection threads can't write over the
+//! menu, and the log file is the only place anything goes.
 //!
 //! The main menu is the C# version's: an enum for the server state, and a
-//! match on the letter and the state.  Starting and stopping are stubs for
-//! now, because there is no networking to start.
+//! match on the letter and the state.
 //!
 //! Passwords are typed with the `rpassword` crate, so they never show on
 //! the screen.  The standard library can't turn the terminal's echo off.
 
-use std::io::{self, Write};
-use std::process::{Command, Stdio};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use stratum_tools::account::{self, Account};
 use stratum_tools::constellations;
 use stratum_tools::scribe::{self, Channel};
@@ -38,14 +40,18 @@ enum ServerState {
 // The main menu
 // ---------------------------------------------------------------------------
 
+/// How much of the log L shows.
+const VIEW_LOG_LINES: usize = 50;
+
+/// How far back View log reads at a time.  50 log lines are about 6 KB, so
+/// one chunk usually does it.
+const VIEW_LOG_CHUNK_BYTES: u64 = 16 * 1024;
+
 /// Runs the menu until the admin picks Q, or the terminal closes (Ctrl-D).
 /// A closed terminal counts as Q, and stops the server first if it is
 /// running, because nobody is left to pick Stop.
 pub fn run() {
-    // Quiet first, so if the window won't open, the menu says so once and
-    // the log line about it doesn't say it again.
-    scribe::quiet_terminal(true);
-    open_log_window();
+    say(&format!("The log is {}.", log_path().display()));
 
     let mut state = ServerState::NeverStarted;
 
@@ -72,7 +78,8 @@ pub fn run() {
                     state = ServerState::Running;
                 }
             }
-            
+
+            (Some('L'), _) => view_log(),
             (Some('W'), _) => account_menu(),
             (Some('C'), _) => config_menu(),
             (Some('Q'), ServerState::Running) => {
@@ -82,10 +89,6 @@ pub fn run() {
             _ => say("That isn't one of the choices."),
         }
     }
-
-    // The shutdown lines come back to this terminal, so there is something
-    // to watch while the config saves and DiskMan finishes up.
-    scribe::quiet_terminal(false);
 }
 
 fn show_main_menu(state: ServerState) {
@@ -93,6 +96,7 @@ fn show_main_menu(state: ServerState) {
     say(&format!("Stratum Core -- the server is {}.", state_text(state)));
     say("");
     say(&format!("  S) {}", start_label(state)));
+    say("  L) View the log");
     say("  W) Account management");
     say("  C) Config management");
     if state != ServerState::Running {
@@ -120,26 +124,97 @@ fn state_text(state: ServerState) -> &'static str {
 
 /// Starts networking.  True when it is running.  A refusal comes with its
 /// reason in words, and the admin sees it in the menu.
+///
+/// The terminal goes quiet only once the start has worked, so anything
+/// networking has to warn about on the way up still shows here.
 fn start_server() -> bool {
     match stratum_networking::start() {
         Ok(()) => {
             scribe::info(Channel::Core, "Server started.");
             say("Server started.");
+            scribe::quiet_terminal(true);
             true
         }
         Err(reason) => {
             let text = format!("The server didn't start.  {}", reason);
             scribe::error(Channel::Core, &text);
-            say(&text);
             false
         }
     }
 }
 
+/// Stops networking.  The terminal comes back first, so a warning from the
+/// stop itself lands in front of the admin who asked for it.
 fn stop_server() {
+    scribe::quiet_terminal(false);
     stratum_networking::stop();
     scribe::info(Channel::Core, "Server stopped.");
     say("Server stopped.");
+}
+
+// ---------------------------------------------------------------------------
+// L) View the log
+// ---------------------------------------------------------------------------
+
+/// The `latest.log` link in the log folder, which Scribe keeps pointed at
+/// the file it is writing.
+fn log_path() -> PathBuf {
+    constellations::log_folder().join(scribe::LATEST_LINK_NAME)
+}
+
+/// Shows the last 50 lines of the log, plain, the way they are in the file.
+fn view_log() {
+    let path = log_path();
+    match last_lines(&path, VIEW_LOG_LINES, VIEW_LOG_CHUNK_BYTES) {
+        Ok(lines) if lines.is_empty() => say("The log is empty."),
+        Ok(lines) => {
+            say("");
+            for line in &lines {
+                say(line);
+            }
+        }
+        Err(problem) => say(&format!("Can't read the log at {}: {}.", path.display(), problem)),
+    }
+}
+
+/// The last `count` lines of a file.  A log file can be hundreds of
+/// megabytes, so this doesn't read the whole thing: it reads from the end,
+/// `chunk_bytes` at a time, until it has seen more newlines than it needs
+/// or it has reached the top.  The first line of what it read is probably
+/// only the tail end of a line, but with one more newline than lines wanted
+/// the ones we keep are all whole.
+///
+/// This goes to the file directly, not through DiskMan.  The log is Scribe's,
+/// and Scribe is DiskMan's one exception already.
+fn last_lines(path: &Path, count: usize, chunk_bytes: u64) -> io::Result<Vec<String>> {
+    let mut file = File::open(path)?;
+    let mut end = file.metadata()?.len();
+    let mut bytes: Vec<u8> = Vec::new();
+
+    loop {
+        let start = end.saturating_sub(chunk_bytes);
+        let mut chunk = vec![0u8; (end - start) as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut chunk)?;
+
+        // The new chunk goes in front of what we already had.
+        chunk.extend_from_slice(&bytes);
+        bytes = chunk;
+        end = start;
+
+        let newlines = bytes.iter().filter(|&&byte| byte == b'\n').count();
+        if newlines > count || start == 0 {
+            break;
+        }
+    }
+
+    // Rust note: `from_utf8_lossy` swaps any bytes that aren't valid UTF-8
+    // for a placeholder character instead of failing.  A log that was cut
+    // off mid-character by a crash still shows.
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<String> = text.lines().map(|line| line.to_string()).collect();
+    let skip = lines.len().saturating_sub(count);
+    Ok(lines.into_iter().skip(skip).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -440,69 +515,14 @@ fn change_setting() {
 
 fn reload_settings() {
     constellations::load();
-    say("Reloaded.  Anything wrong with the file is in the log window.");
+    say("Reloaded.  Anything wrong with the file is in the log.");
     settings_changed();
 }
 
 /// After a change or a reload.  Scribe gets its settings again, the same way
-/// main() gave them the first time.  The log folder can't move on a running
-/// server (it lives inside CONTENT_FOLDER), so the log window stays put.
+/// main() gave them the first time.
 fn settings_changed() {
     crate::initialize_scribe();
-}
-
-// ---------------------------------------------------------------------------
-// The log window
-// ---------------------------------------------------------------------------
-
-/// Opens a second terminal that shows the log, using LOG_WINDOW_COMMAND with
-/// `tail -n +1 -F <log folder>/latest.log` on the end.  `-n +1` starts at the
-/// top of the current file, so nothing from today is missed even if the
-/// window opens late, and `-F` follows the link to each new log file.
-///
-/// If the command is empty, or doesn't work, the admin gets the tail command
-/// to run by hand.
-// Rust note: `spawn()` starts the program and comes straight back without
-// waiting for it.  The window outlives the server, which is what we want --
-// it shows the shutdown lines too.
-fn open_log_window() {
-    let settings = constellations::get();
-    let link = constellations::log_folder().join(scribe::LATEST_LINK_NAME);
-    let by_hand = format!("tail -n +1 -F {}", link.display());
-
-    let mut words = settings.log_window_command.split_whitespace();
-    let program = match words.next() {
-        Some(program) => program,
-        None => {
-            say(&format!("No log window (LOG_WINDOW_COMMAND is empty).  For the log, run this in \
-another terminal:  {}", by_hand));
-            return;
-        }
-    };
-
-    // The terminal program's own chatter goes nowhere, or it would land in
-    // the middle of the menu.
-    let spawned = Command::new(program)
-        .args(words)
-        .args(["tail", "-n", "+1", "-F"])
-        .arg(&link)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-
-    match spawned {
-        Ok(_) => scribe::info(Channel::Core, &format!("Opened the log window with: {}", 
-                                                      settings.log_window_command)),
-        Err(error) => {
-            scribe::warn(Channel::Core, 
-                         &format!("Couldn't open the log window with \"{}\": {}", 
-                                  settings.log_window_command, error));
-            say(&format!("Couldn't open the log window with \"{}\" ({}). \
-                For the log, run this in \
-                another terminal:  {}", settings.log_window_command, error, by_hand));
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -550,10 +570,11 @@ fn read_password(prompt: &str) -> Option<String> {
     }
 }
 
-/// A menu choice: one character, any case, spaces around it ignored.
-/// Anything else, including an empty line, is `None`.
+/// A menu choice: one character, any case.  Spaces and stray control keys
+/// (an Escape pressed by accident) are ignored.  Anything else, including
+/// an empty line, is `None`.
 fn choice_of(line: &str) -> Option<char> {
-    let mut chars = line.trim().chars();
+    let mut chars = line.chars().filter(|c| !c.is_whitespace() && !c.is_control());
     let first = chars.next()?;
     if chars.next().is_some() {
         return None;
@@ -579,6 +600,8 @@ mod tests {
         assert_eq!(choice_of("   "), None);
         assert_eq!(choice_of("start"), None);
         assert_eq!(choice_of("sq"), None);
+        
+        assert_eq!(choice_of("\u{1b}q"), Some('Q'));  // Escape pressed by accident
     }
 
     #[test]
@@ -586,5 +609,65 @@ mod tests {
         assert_eq!(start_label(ServerState::NeverStarted), "Start server");
         assert_eq!(start_label(ServerState::Running), "Stop server");
         assert_eq!(start_label(ServerState::Stopped), "Restart server");
+    }
+
+    /// A file of our own under /tmp with `line 1` to `line N` in it, one a
+    /// line.  Not the real log.
+    fn numbered_file(name: &str, lines: usize, trailing_newline: bool) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("stratum_{}_{}.log", name, std::process::id()));
+        let mut text = String::new();
+        for number in 1..=lines {
+            text.push_str(&format!("line {}\n", number));
+        }
+        if !trailing_newline {
+            text.pop();
+        }
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn last_lines_across_chunks() {
+        // A 64 byte chunk is about 8 lines, so 50 lines takes several reads
+        // and most of them start partway through a line.
+        let path = numbered_file("chunks", 120, true);
+        let lines = last_lines(&path, 50, 64).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(lines.len(), 50);
+        assert_eq!(lines[0], "line 71");
+        assert_eq!(lines[49], "line 120");
+    }
+
+    #[test]
+    fn last_lines_of_a_short_file() {
+        let path = numbered_file("short", 7, true);
+        let lines = last_lines(&path, 50, 64).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[0], "line 1");
+        assert_eq!(lines[6], "line 7");
+    }
+
+    #[test]
+    fn last_lines_without_a_trailing_newline() {
+        // A crash can leave the last line unfinished.  It still counts.
+        let path = numbered_file("cut", 120, false);
+        let lines = last_lines(&path, 50, 64).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(lines.len(), 50);
+        assert_eq!(lines[0], "line 71");
+        assert_eq!(lines[49], "line 120");
+    }
+
+    #[test]
+    fn last_lines_of_an_empty_file() {
+        let path = numbered_file("empty", 0, true);
+        let lines = last_lines(&path, 50, 64).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(lines.is_empty());
     }
 }

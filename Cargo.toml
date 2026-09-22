@@ -10,8 +10,8 @@ members = ["stratum-tools", "stratum-launcher" , "stratum-networking"]
 resolver = "3"
 
 # Argon2 is slow on purpose, but a debug build makes it slow by accident too
-# -- about 20 times slower.  These two lines build argon2 and blake2 (the
-# hash it is made of) optimized, even in a debug build, so `cargo run` and
+# -- about 20 times slower.  These lines build argon2 and blake2 (the hash it
+# is made of) optimized, even in a debug build, so `cargo run` and
 # `cargo test` hash at the speed the real server will.  They have to live in
 # this file.  Cargo ignores profiles in a member's Cargo.toml.
 [profile.dev.package.argon2]
@@ -20,5 +20,7 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
+# Same reason.  ring is the crypto under rustls, and a TLS handshake in an
+# unoptimized build was 7 ms against 0.3 ms.
 [profile.dev.package.ring]
 opt-level = 3

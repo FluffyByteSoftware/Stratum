@@ -4,7 +4,7 @@ Stratum is a game server written in Rust.  It is the authority for a small-scale
 
 ## State of things
 
-A hobby project by one person, and early days.  What exists is the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts and change settings.  "Start server" opens a TCP port, and every connection gets a thread of its own and a TLS handshake.  Then the server hangs up, because there is no protocol yet to say what comes next.  No login either.  Things will be missing, things will break, and things will change.
+A hobby project by one person, and early days.  What exists is the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts and change settings.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in stays connected, but there is nothing to do yet: no characters to pick, no world, no UDP.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
@@ -22,11 +22,13 @@ A Cargo workspace with three crates:
 
 ```
 ├── Cargo.toml              The workspace.
+├── docs/PROTOCOL.md        What the server and a client say to each other, byte
+│                           by byte.
 ├── stratum-tools/          The tools everything shares: the logger (Scribe),
 │                           the config (Constellations), file writes (DiskMan),
 │                           passwords (Security) and accounts.
-├── stratum-networking/     The TCP side (a listener and TLS, so far) and the
-│                           UDP side (not written yet).
+├── stratum-networking/     The TCP side (a listener, TLS and the login, so far)
+│                           and the UDP side (not written yet).
 └── stratum-launcher/       The program: starts the tools, runs the admin's menu.
 ```
 
@@ -41,9 +43,9 @@ cargo run
 cargo test
 ```
 
-Run it from a real terminal (Konsole, or whatever yours is), not an IDE's Run button.  The menu needs a real terminal to hide passwords.
+Run it from a real terminal, not an IDE's Run button.  The menu needs a real terminal to hide passwords.
 
-When the menu comes up, a second window opens with the log in it.  The command that opens it is `LOG_WINDOW_COMMAND` in the config file, which starts out as `konsole -e` because that is what the author's machine has.  Change it to your own terminal's "run this command" form (`gnome-terminal --`, `xterm -e`), or leave it empty and run this in another terminal yourself:
+The log goes to a file, and the menu's L) shows the last 50 lines of it.  While the server isn't running, warnings and errors also print in the terminal; once it is running, nothing does, so the log can't write over the menu.  To watch it live, run this in another terminal:
 
 ```
 tail -n +1 -F /opt/stratum/content/logs/latest.log
@@ -65,6 +67,26 @@ openssl s_client -connect <address>:<port> -CAfile /opt/stratum/content/saved/ss
 ```
 
 Delete both files and a new pair gets made at the next start -- and every client needs the new `cert.pem`.
+
+### Running it on another machine
+
+The menu needs a terminal, and SSH gives you one.  The trouble with a plain SSH session is that the server dies with it.  `tmux` (a "terminal multiplexer") fixes that: the session lives on the server's machine, and you come and go.
+
+```
+ssh you@server
+tmux new -s stratum
+cd /path/to/stratum.server
+cargo run --release
+```
+
+If L) in the menu isn't enough, split the window with `Ctrl-b %` and run the `tail` above in the other half; `Ctrl-b` and an arrow key moves between the two halves.  `Ctrl-b d` detaches, and the server keeps running after you log out.  To get back to it:
+
+```
+ssh you@server
+tmux attach -t stratum
+```
+
+The menu is where you left it.  Quit with Q from the menu, not by closing the session -- Q is what saves the config and finishes any writes.
 
 Developed on Linux.  Nothing has been tried anywhere else.
 

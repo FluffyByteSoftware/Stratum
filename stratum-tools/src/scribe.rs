@@ -1,4 +1,4 @@
-//! File:     src/scribe.rs
+//! File:     stratum-tools/src/scribe.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
 //!
@@ -27,11 +27,16 @@
 //! Scribe doesn't know Constellations exists.  main() is the only one who
 //! knows both.
 //!
-//! Once the Launcher's menu is up, the terminal belongs to the menu, and
-//! Scribe goes quiet there (`quiet_terminal()`).  The log gets read in its
-//! own window instead, through a link called `latest.log` in the log folder
-//! that always points at the file we are writing to.  So nothing is missed,
-//! it just isn't in the admin's way.
+//! The terminal only ever gets Warn and Error lines, so the log can't flood
+//! it.  Info and Debug go to the file alone.  Once the server has started,
+//! the Launcher quiets the terminal completely (`quiet_terminal()`), and the
+//! file is the only place anything goes.  The one exception is a log file we
+//! had to give up on: then everything prints, because a message nobody can
+//! see anywhere is worse than one that interrupts the menu.
+//!
+//! A link called `latest.log` in the log folder always points at the file we
+//! are writing to.  The Launcher's View log reads the end of it, and so can
+//! `tail -F` in another terminal.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -144,7 +149,7 @@ pub struct ScribeConfig {
 }
 
 /// The name of the link in the log folder that always points at the log file
-/// we are writing to.  The log window runs `tail -F` on it.
+/// we are writing to.  The Launcher's View log reads it.
 pub const LATEST_LINK_NAME: &str = "latest.log";
 
 /// What Scribe runs on until initialize() hands it the real settings.  In a
@@ -183,13 +188,9 @@ struct Scribe {
     /// Set when the log file could not be opened or written.  After that we
     /// only print to the terminal.
     file_gave_up: bool,
-    /// Set by the Launcher while its menu owns the terminal.  Messages still
-    /// go to the file, just not to the screen.
+    /// Set by the Launcher while the server is running.  Nothing goes to the
+    /// terminal then, not even an Error.  Everything still goes to the file.
     terminal_quiet: bool,
-    /// Set when the `latest.log` link couldn't be pointed at the current
-    /// file.  The log window follows that link, so it has stopped showing
-    /// anything new.
-    link_broken: bool,
 }
 
 // Rust note: there are no static classes, so this is a file-scope global, the
@@ -208,7 +209,6 @@ fn new_scribe() -> Scribe {
         file_bytes: 0,
         file_gave_up: false,
         terminal_quiet: false,
-        link_broken: false,
     }
 }
 
@@ -265,14 +265,14 @@ pub fn initialize(config: ScribeConfig) {
 }
 
 /// Stops Scribe printing to the terminal (true), or starts it again (false).
-/// The Launcher turns it on while its menu is up, so log lines don't land in
-/// the middle of whatever the admin is typing.  Everything still goes to the
-/// log file, and the log window shows it from there.
+/// The Launcher turns it on while the server is running and off when it
+/// stops, so fifty connection threads can't write over the menu.  While it
+/// is on, nothing reaches the terminal, not even an Error.  Everything still
+/// goes to the log file, and View log shows it from there.
 ///
-/// Two things ignore this and print anyway: a log file we had to give up on,
-/// and a `latest.log` link we couldn't update.  Either way the log window
-/// has stopped showing new lines, and a message nobody can see anywhere is
-/// worse than one that interrupts the menu.
+/// One thing ignores this and prints anyway: a log file we had to give up
+/// on.  Then the terminal is the only place left, and a message nobody can
+/// see anywhere is worse than one that interrupts the menu.
 pub fn quiet_terminal(quiet: bool) {
     let mut guard = SCRIBE.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -337,7 +337,12 @@ pub fn log(priority: Priority, channel: Channel, message: &str) {
     // The file first, so we know whether it worked before deciding whether
     // the terminal has to show this line too.
     write_to_file(scribe, &now, &line);
-    if !scribe.terminal_quiet || scribe.file_gave_up || scribe.link_broken {
+
+    // The terminal gets Warn and Error, and only while the Launcher hasn't
+    // quieted it.  A log file we gave up on overrides both: with no file,
+    // the terminal is the only place anything can go.
+    let matters = priority == Priority::Warn || priority == Priority::Error;
+    if scribe.file_gave_up || (matters && !scribe.terminal_quiet) {
         write_to_terminal(&scribe.config, priority, &line);
     }
 
@@ -435,7 +440,8 @@ fn write_to_file(scribe: &mut Scribe, now: &UtcTime, line: &str) {
         None => return,
     };
 
-    let result = writeln!(file, "{}", line);
+    let result = file.write_all(format!("{}\n", line).as_bytes());
+    
     match result {
         Ok(()) => scribe.file_bytes += line_bytes,
         Err(problem) => {
@@ -472,7 +478,8 @@ fn find_latest_counter(config: &ScribeConfig, now: &UtcTime) -> u32 {
 /// Points the `latest.log` link at the log file we just opened.  We make the
 /// new link under a temp name and rename it over the old one, the same trick
 /// DiskMan uses for files, so there is never a moment with no link at all.
-/// `tail -F` notices the link now leads somewhere else and follows it.
+/// View log reads whatever it points at, and `tail -F` notices the link now
+/// leads somewhere else and follows it.
 ///
 /// The link holds only the file's name, not its whole path, so it still
 /// works if somebody moves the whole log folder.
@@ -523,14 +530,10 @@ fn open_log_file(scribe: &mut Scribe, now: &UtcTime) {
             };
             scribe.file = Some(file);
 
-            match point_latest_link(&scribe.config.log_dir, &path) {
-                Ok(()) => scribe.link_broken = false,
-                Err(problem) => {
-                    scribe.link_broken = true;
-                    let reason = format!("Can't point {} at {}: {}.  The log window won't show anything \
-new, so the terminal gets everything again.", LATEST_LINK_NAME, path.display(), problem);
-                    complain(scribe, &reason);
-                }
+            if let Err(problem) = point_latest_link(&scribe.config.log_dir, &path) {
+                let reason = format!("Can't point {} at {}: {}.  View log and tail -F will show \
+the old file until this is fixed.", LATEST_LINK_NAME, path.display(), problem);
+                complain(scribe, &reason);
             }
         }
         Err(problem) => {

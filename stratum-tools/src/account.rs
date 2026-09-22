@@ -1,4 +1,4 @@
-//! File:     src/account.rs
+//! File:     stratum-tools/src/account.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
 //!
@@ -42,6 +42,8 @@ use crate::constellations;
 // ---------------------------------------------------------------------------
 // The numbers
 // ---------------------------------------------------------------------------
+/// The account file's extension. The file for "jacob" is 'jacob.act' in the folder
+/// Constellations says.
 const ACCOUNT_EXTENSION: &str = "act";
 
 const MIN_USERNAME_CHARS: usize = 4;
@@ -67,9 +69,6 @@ const MAX_EMAIL_CHARS: usize = 254;
 // here has serde write the code that turns this struct into JSON and back,
 // so we never write a JSON parser.  The field names below are the names in
 // the file.
-// TODO(account): the allow comes off when the console or the TCP login
-// gives the account its first customer.
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Account {
     /// Always lowercase.  Also the file name.
@@ -102,7 +101,6 @@ pub struct Account {
 // TODO(pawns): this gets replaced by the real pawn -- a character that
 // either a person or the AI can control -- once there are players in the
 // world.
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Pawn {
     pub uuid: String,
@@ -177,8 +175,8 @@ pub fn start() -> bool {
                     None => continue,
                 };
                 if check_username(&username) != Ok(username.clone()) {
-                    scribe::warn(Channel::Security, &format!("{} isn't named like an account file.  \
-Skipped it.", path.display()));
+                    scribe::warn(Channel::Security, &format!("{} isn't named like \
+                    an account file. Skipped it.", path.display()));
                     continue;
                 }
 
@@ -190,7 +188,8 @@ Skipped it.", path.display()));
                             if !names.character_names.insert(pawn.name.clone()) {
                                 scribe::error(Channel::Security, 
                                               &format!("There is more than one character \
-called {}.  The second one is on account {}.", display_name(&pawn.name), username));
+                                                        called {}.  The second one is on account \
+                                                        {}.", display_name(&pawn.name), username));
                             }
                         }
                     }
@@ -222,7 +221,8 @@ character names aren't known.  One of them could be taken again.", username));
     scribe::info(Channel::Security, &format!("Found {} account(s) and {} character(s).",
                                              names.usernames.len(), names.character_names.len()));
 
-    let mut guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = NAMES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = Some(names);
     true
 }
@@ -230,7 +230,8 @@ character names aren't known.  One of them could be taken again.", username));
 /// Takes a name, so nobody else can.  An `Err` says why not, in words for
 /// whoever typed it.
 fn reserve_name(kind: NameKind, name: &str) -> Result<(), String> {
-    let mut guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = NAMES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match guard.as_mut() {
         Some(names) => reserve_in(names, kind, name),
         None => Err("The list of names in use couldn't be loaded, so no new names can be taken.".to_string()),
@@ -239,7 +240,8 @@ fn reserve_name(kind: NameKind, name: &str) -> Result<(), String> {
 
 /// Hands a name back, when whatever took it didn't make it to the disk.
 fn release_name(kind: NameKind, name: &str) {
-    let mut guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = NAMES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(names) = guard.as_mut() {
         release_in(names, kind, name);
     }
@@ -277,7 +279,8 @@ fn release_in(names: &mut Names, kind: NameKind, name: &str) {
 /// Hands back the username and every character name on an account, all
 /// together, under one lock.  For a deleted account.
 fn release_account_names(account: &Account) {
-    let mut guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = NAMES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(names) = guard.as_mut() {
         release_account_in(names, account);
     }
@@ -294,7 +297,8 @@ fn release_account_in(names: &mut Names, account: &Account) {
 /// Every username on the server, in alphabetical order.  Straight from the
 /// names list, so it doesn't touch the disk.  Empty if `start()` never ran.
 pub fn list_usernames() -> Vec<String> {
-    let guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = NAMES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut usernames: Vec<String> = match guard.as_ref() {
         Some(names) => names.usernames.iter().cloned().collect(),
         None => Vec::new(),
@@ -316,7 +320,6 @@ pub fn list_usernames() -> Vec<String> {
 /// name and the birthday can all be left empty.
 ///
 /// An `Err` is a message for the admin saying what went wrong.
-#[allow(dead_code)]
 pub fn create_account(username: &str, password: &str, email: &str, real_name: &str, birthday: &str)
                       -> Result<Account, String> {
     let username = check_username(username)?;
@@ -328,7 +331,8 @@ pub fn create_account(username: &str, password: &str, email: &str, real_name: &s
     // Take the name first, so two accounts being made at the same moment
     // can't both get it.  If anything after this fails, it goes back.
     reserve_name(NameKind::Username, &username)?;
-    let result = write_new_account(username.clone(), password, email, real_name, birthday);
+    let result = 
+        write_new_account(username.clone(), password, email, real_name, birthday);
     if result.is_err() {
         release_name(NameKind::Username, &username);
     }
@@ -389,7 +393,6 @@ fn write_new_account(username: String, password: &str, email: &str, real_name: &
 /// FAILED" as a wrong password.  `Err` means the file is there and we can't
 /// use it.  That has already been logged, and a login should treat it as a
 /// plain failure too.
-#[allow(dead_code)]
 pub fn load_account(username: &str) -> Result<Option<Account>, String> {
     // A name that breaks the rules can't have an account, so it never gets
     // anywhere near a file path.  This is what stops somebody logging in as
@@ -413,7 +416,8 @@ pub fn load_account(username: &str) -> Result<Option<Account>, String> {
     match account_from_text(&text, &username) {
         Ok(account) => Ok(Some(account)),
         Err(problem) => {
-            scribe::error(Channel::Security, &format!("The account file for {} is damaged: {}",
+            scribe::error(Channel::Security, 
+                          &format!("The account file for {} is damaged: {}",
                                                       username, problem));
             Err(format!("The account file for {} is damaged.", username))
         }
@@ -422,7 +426,6 @@ pub fn load_account(username: &str) -> Result<Option<Account>, String> {
 
 /// Writes an account out to its file, through `diskman::write_file()`.
 /// Doesn't come back until the file is safe on the disk.
-#[allow(dead_code)]
 pub fn save_account(account: &Account) -> io::Result<()> {
     // The username is about to become a file name.  Everything that makes an
     // Account in here has already checked it, but this is the last door
@@ -432,7 +435,8 @@ pub fn save_account(account: &Account) -> io::Result<()> {
         Err(problem) => return Err(io::Error::new(io::ErrorKind::InvalidInput, problem)),
     };
     if username != account.username {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "A username has to be stored lowercase."));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, 
+                                  "A username has to be stored lowercase."));
     }
 
     let text = match account_to_text(account) {
@@ -459,7 +463,8 @@ pub fn save_account(account: &Account) -> io::Result<()> {
 pub fn delete_account(username: &str) -> Result<(), String> {
     let account = match load_account(username) {
         Ok(Some(account)) => account,
-        Ok(None) => return Err(format!("There is no account called {}.", username.to_ascii_lowercase())),
+        Ok(None) => return Err(format!("There is no account called {}.",
+                                       username.to_ascii_lowercase())),
         // load_account() has already logged what is wrong with it.
         Err(problem) => return Err(format!("{}  It wasn't deleted.", problem)),
     };
@@ -484,7 +489,6 @@ pub fn delete_account(username: &str) -> Result<(), String> {
 /// the new character's UUID.  The name has to be free on the whole server.
 /// If the save fails, the character comes back off again and the name is
 /// free again, so what is in memory still matches what is on the disk.
-#[allow(dead_code)]
 pub fn add_character(account: &mut Account, name: &str) -> Result<String, String> {
     let name = check_character_name(name)?;
 
@@ -532,13 +536,13 @@ pub fn change_password(account: &mut Account, new_password: &str) -> Result<(), 
         return Err(format!("Couldn't save the account file: {}", error));
     }
 
-    scribe::info(Channel::Security, &format!("Password changed for account {}.", account.username));
+    scribe::info(Channel::Security, &format!("Password changed for account {}.",
+                                             account.username));
     Ok(())
 }
 
 /// Stamps the account with the time of this login and saves it.  Only for a
 /// login that got the password right.
-#[allow(dead_code)]
 pub fn record_login(account: &mut Account) -> io::Result<()> {
     account.last_login = now_seconds();
     save_account(account)
@@ -552,7 +556,6 @@ pub fn record_login(account: &mut Account) -> io::Result<()> {
 /// is.  4 to 16 characters: letters, numbers and underscores, and it can't
 /// start with an underscore.  An `Err` is a message
 /// in words for whoever typed it.
-#[allow(dead_code)]
 pub fn check_username(username: &str) -> Result<String, String> {
     if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err("A username can only have letters, numbers and underscores in it.".to_string());
@@ -572,7 +575,6 @@ pub fn check_username(username: &str) -> Result<String, String> {
 
 /// Says whether a character name is allowed, and hands it back lowercase if
 /// it is.  4 to 12 characters, letters only.
-#[allow(dead_code)]
 pub fn check_character_name(name: &str) -> Result<String, String> {
     if !name.chars().all(|c| c.is_ascii_alphabetic()) {
         return Err("A character name can only have letters in it.".to_string());
@@ -591,14 +593,14 @@ pub fn check_character_name(name: &str) -> Result<String, String> {
 /// account needs one.  Otherwise it is only a sanity check: one `@` with
 /// something on both sides, no spaces, plain ASCII.  It doesn't prove the
 /// address works.  Nothing but sending a mail to it can do that.
-#[allow(dead_code)]
 pub fn check_email(email: &str) -> Result<(), String> {
     if email.is_empty() {
         return Ok(());
     }
 
     if email.chars().count() > MAX_EMAIL_CHARS {
-        return Err(format!("An email address can't be longer than {} characters.", MAX_EMAIL_CHARS));
+        return Err(format!("An email address can't be longer than {} characters.", 
+                           MAX_EMAIL_CHARS));
     }
 
     // `is_ascii_graphic()` is anything printable except the space.
@@ -618,10 +620,10 @@ pub fn check_email(email: &str) -> Result<(), String> {
 /// characters of anything but control characters (tabs, newlines and the
 /// like).  Real names have spaces, hyphens, apostrophes and accents in them,
 /// so none of those are refused.
-#[allow(dead_code)]
 pub fn check_real_name(real_name: &str) -> Result<(), String> {
     if real_name.chars().count() > MAX_REAL_NAME_CHARS {
-        return Err(format!("A real name can't be longer than {} characters.", MAX_REAL_NAME_CHARS));
+        return Err(format!("A real name can't be longer than {} characters.", 
+                           MAX_REAL_NAME_CHARS));
     }
     if real_name.chars().any(|c| c.is_control()) {
         return Err("A real name can't have tabs or line breaks in it.".to_string());
@@ -632,7 +634,6 @@ pub fn check_real_name(real_name: &str) -> Result<(), String> {
 /// Says whether a birthday is allowed.  Empty is fine.  Otherwise it has to
 /// be "MM-DD", two digits each, and a day that month actually has.  The 29th
 /// of February is allowed, since there is no year to say it isn't.
-#[allow(dead_code)]
 pub fn check_birthday(birthday: &str) -> Result<(), String> {
     if birthday.is_empty() {
         return Ok(());
@@ -671,7 +672,6 @@ pub fn check_birthday(birthday: &str) -> Result<(), String> {
 }
 
 /// A stored name the way the game shows it: "aldric" comes out "Aldric".
-#[allow(dead_code)]
 pub fn display_name(name: &str) -> String {
     let mut shown = String::new();
     for (position, c) in name.chars().enumerate() {
@@ -776,14 +776,17 @@ mod tests {
             username: "jacob".to_string(),
             // Not a real hash.  A real one costs 85 ms, and all we need here
             // is something with the same $ and = in it.
-            password_hash_string: "$argon2id$v=19$m=65536,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".to_string(),
+            password_hash_string: 
+            "$argon2id$v=19$m=65536,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".to_string(),
             email: "jacob@example.com".to_string(),
             real_name: "Jacob Chacko".to_string(),
             birthday: "03-14".to_string(),
             account_uid: "0c4e1f2a-6b3d-4e5f-a1b2-c3d4e5f60718".to_string(),
             characters: vec![
-                Pawn { uuid: "3f2a91c0-e4b7-4d1a-9c0e-2b7f5a6d8e10".to_string(), name: "aldric".to_string() },
-                Pawn { uuid: "9b1c0e2d-77a4-4f10-8b3e-5d6c7a8b9c0d".to_string(), name: "mira".to_string() },
+                Pawn { uuid: "3f2a91c0-e4b7-4d1a-9c0e-2b7f5a6d8e10".to_string(), 
+                    name: "aldric".to_string() },
+                Pawn { uuid: "9b1c0e2d-77a4-4f10-8b3e-5d6c7a8b9c0d".to_string(), 
+                    name: "mira".to_string() },
             ],
             created_at: 1790021647,
             last_login: 0,
@@ -966,9 +969,15 @@ mod tests {
         // The hash moved into a field that wants a number.  serde_json's own
         // message would quote it back at us.  Ours mustn't.
         let text = 
-            "{ \"username\": \"jacob\", \"password_hash_string\": \"x\", \"email\": \"\", \
-               \"real_name\": \"\", \"birthday\": \"\", \"account_uid\": \"x\", \"characters\": [], \
-               \"created_at\": \"$argon2id$v=19$secret\", \"last_login\": 0 }";
+            "{ \"username\": \"jacob\", \
+            \"password_hash_string\": \"x\",\
+             \"email\": \"\", \
+             \"real_name\": \"\", \
+             \"birthday\": \"\", \
+             \"account_uid\": \"x\", \
+             \"characters\": [], \
+               \"created_at\": \"$argon2id$v=19$secret\", \
+               \"last_login\": 0 }";
         let problem = account_from_text(text, "jacob").unwrap_err();
         assert!(!problem.contains("argon2"));
     }

@@ -6,13 +6,13 @@
 //! online in order, and gets the game ready for play.  Right now the pieces
 //! are Scribe, Constellations, Security, Launcher, Account, and DiskMan.
 
-use stratum_tools::{account, constellations, diskman, scribe};
-use stratum_tools::scribe::{Channel, ScribeConfig};
-
 // Rust note: `mod launcher;` tells the compiler that src/launcher.rs is part
 // of this program.  The tools aren't named here any more -- they are their
 // own crate now, and the `use` lines below reach into it.
 mod launcher;
+
+use stratum_tools::{account, constellations, diskman, scribe};
+use stratum_tools::scribe::{Channel, ScribeConfig};
 
 /// The main entry point for the server.  This is where the program starts
 /// running.  It is the first function called, and the last one to return.
@@ -35,14 +35,15 @@ fn main() {
     constellations::make_folders();
 
     let settings = constellations::get();
-    scribe::info(Channel::Core, &format!("TCP will listen on {}:{}",
+    scribe::info(Channel::Core, &format!("TCP is configured for {}:{}",
                                          settings.tcp_host_address, settings.tcp_port));
 
 
     // Which usernames and character names are already taken.  If the account
     // folder can't be read we can't tell, and nothing after this is safe.
     if !account::start() {
-        scribe::error(Channel::Core, "Can't go on without the account folder.  Shutting down.");
+        scribe::error(Channel::Core, "Can't go on without the account folder.  \
+        Shutting down.");
         constellations::save();
         diskman::stop();
         std::process::exit(1);

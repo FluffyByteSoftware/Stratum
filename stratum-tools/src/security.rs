@@ -1,9 +1,6 @@
-//! File:     src/security.rs
+//! File:     stratum-tools/src/security.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
-//!
-//! Security.  Passwords now, and login tokens once there is a TCP side to
-//! hand them out on.
 //!
 //! A password gets hashed with Argon2id and a random salt, and only the hash
 //! is ever kept.  Hashing is one-way on purpose -- we can check a password,
@@ -101,9 +98,6 @@ fn current_params() -> Params {
 ///
 /// This doesn't check the password rules.  Call `check_password_rules()`
 /// first, and tell the player what they got wrong.
-// No customer until the TCP side exists, so the compiler is told to be
-// quiet.
-#[allow(dead_code)]
 #[track_caller]
 pub fn hash_password(password: &str) -> Result<String, String> {
     match hash_with(&current_params(), password) {
@@ -128,28 +122,19 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 /// that gets an Error line on the Security channel (without the line itself
 /// in it -- a salt and a hash have no business in a log).  The password is
 /// wrong as far as the caller is concerned.
-// No customer until the TCP side exists, so the compiler is told to be
-// quiet.
-#[allow(dead_code)]
 #[track_caller]
 pub fn verify_password(password: &str, stored: &str) -> bool {
-    match check_password(password, stored) {
-        Ok(matched) => matched,
-        Err(reason) => {
-            scribe::error(Channel::Security,
-                          &format!("Security was handed a stored password hash it \
+    check_password(password, stored).unwrap_or_else(|reason| {
+        scribe::error(Channel::Security,
+                      &format!("Security was handed a stored password hash it \
                           can't read ({}).  That account file is damaged.  \
                           Treating the password as wrong.", reason));
-            false
-        }
-    }
+        false
+    })
 }
 
 /// Says whether a new password is allowed, and if not, why, in words meant
 /// for the player.  Doesn't log, doesn't hash.
-// No customer until the TCP side exists, so the compiler is told to be
-// quiet.
-#[allow(dead_code)]
 pub fn check_password_rules(password: &str) -> Result<(), String> {
     // Rust note: `chars().count()` counts characters and `len()` counts
     // bytes.  They are the same for ASCII, which is all we allow, but the
@@ -195,9 +180,6 @@ pub fn check_password_rules(password: &str) -> Result<(), String> {
 /// this the reply time says which is which.  With it, every attempt answers
 /// at the same moment.  The waiting happens on the connection's own thread,
 /// so it only ever holds up the one client who is logging in.
-// No customer until the TCP side exists, so the compiler is told to be
-// quiet.
-#[allow(dead_code)]
 pub fn pad_login_time(started: Instant) {
     let floor = Duration::from_millis(MIN_LOGIN_MILLIS);
     let spent = started.elapsed();

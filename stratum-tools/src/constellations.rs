@@ -102,10 +102,6 @@ pub struct Settings {
     pub color_info: Color,
     pub color_warn: Color,
     pub color_error: Color,
-    /// The command that opens the log window, with the rest of the command
-    /// (`tail -n +1 -F` on the log) added on the end.  Empty means no
-    /// window -- over SSH, say, where there is nowhere to open one.
-    pub log_window_command: String,
 }
 
 /// The built-in values.  These are what goes into a freshly generated config
@@ -126,7 +122,6 @@ fn default_settings() -> Settings {
         color_info: Color::White,
         color_warn: Color::Yellow,
         color_error: Color::Red,
-        log_window_command: "konsole -e".to_string(),
     }
 }
 
@@ -267,6 +262,7 @@ pub fn get() -> Settings {
 /// The change is in memory only until save() writes it at shutdown.  Nothing
 /// else is told about it: the Launcher hands Scribe its settings again, and
 /// the addresses and ports get picked up the next time the server starts.
+#[track_caller]
 pub fn set(line: &str) -> Result<(), String> {
     let mut guard = CONSTELLATIONS.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -312,8 +308,12 @@ pub fn account_folder() -> PathBuf {
     get().content_folder.join(ACCOUNT_SUBFOLDER)
 }
 
-/// Where the server's TLS certificate and key will live.  Inside the content
-/// folder.  Nothing uses it until the networking exists.
+/// Where the SSL certificate and key live, inside the content folder.  The
+/// folder is made the first time the server runs, and the files are made
+/// the first time TLS is started.  The files are never written again, and the
+/// folder is never removed, so the admin can put their own files in there
+/// if they want to.  The server refuses to start if only one of the two is
+/// there, so the admin can't accidentally lock out all the clients.
 pub fn ssl_folder() -> PathBuf {
     get().content_folder.join(SSL_SUBFOLDER)
 }
@@ -488,9 +488,6 @@ fn apply_setting(settings: &mut Settings, key: &str, value: &str) -> Result<(), 
         "COLOR_INFO" => settings.color_info = parse_color(key, value)?,
         "COLOR_WARN" => settings.color_warn = parse_color(key, value)?,
         "COLOR_ERROR" => settings.color_error = parse_color(key, value)?,
-        // Anything goes here, empty included.  There's no way to check a
-        // command short of running it.
-        "LOG_WINDOW_COMMAND" => settings.log_window_command = value.to_string(),
         _ => {
             return Err(format!("There is no setting called {}.", key));
         }
@@ -589,7 +586,7 @@ fn color_name(color: Color) -> &'static str {
 /// The complete text of a config file holding these settings, comments and
 /// all.  Whatever this writes, parse_text() has to be able to read back, and
 /// there is a test that holds us to it.
-fn file_text(settings: &Settings) -> String {
+fn file_text(settings:&Settings) -> String {
     let mut text = String::new();
 
     text.push_str("# Stratum general config file.\n");
@@ -651,15 +648,6 @@ fn file_text(settings: &Settings) -> String {
     text.push_str(&format!("COLOR_WARN={}\n", color_name(settings.color_warn)));
     text.push_str(&format!("COLOR_ERROR={}\n", color_name(settings.color_error)));
     text.push_str("\n");
-
-    text.push_str("# The command that opens the log window when the Launcher \
-    starts.  The\n");
-    text.push_str("# server puts `tail -n +1 -F` and the log's path on the end.  \
-    Leave it\n");
-    text.push_str("# empty for no window (over SSH, say), and run that tail \
-    yourself.\n");
-    text.push_str(&format!("LOG_WINDOW_COMMAND={}\n", settings.log_window_command));
-
     text
 }
 
@@ -735,7 +723,6 @@ mod tests {
             color_info: Color::Blue,
             color_warn: Color::Magenta,
             color_error: Color::Gray,
-            log_window_command: "xterm -hold -e".to_string(),
         };
 
         let mut read_back = default_settings();
@@ -818,29 +805,19 @@ mod tests {
     #[test]
     fn a_value_can_have_an_equals_sign_in_it() {
         let mut settings = default_settings();
-        let problems = parse_text("CONTENT_FOLDER=/tmp/a=b/content\n", &mut settings);
+        let problems = parse_text("CONTENT_FOLDER=/tmp/a=b/content\n", 
+                                  &mut settings);
 
         assert!(problems.is_empty());
         assert_eq!(settings.content_folder, PathBuf::from("/tmp/a=b/content"));
     }
 
     #[test]
-    fn an_empty_log_window_command_means_no_window() {
-        let mut written = default_settings();
-        written.log_window_command = String::new();
-
-        let mut read_back = default_settings();
-        let problems = parse_text(&file_text(&written), &mut read_back);
-
-        assert!(problems.is_empty());
-        assert_eq!(read_back.log_window_command, "");
-    }
-
-    #[test]
     fn an_old_log_folder_line_is_ignored() {
         // Every config file written before CONTENT_FOLDER has one of these.
         let mut settings = default_settings();
-        let problems = parse_text("LOG_FOLDER=/opt/stratum/content/logs/\n", &mut settings);
+        let problems = parse_text("LOG_FOLDER=/opt/stratum/content/logs/\n", 
+                                  &mut settings);
 
         assert_eq!(problems.len(), 1);
         assert!(settings == default_settings());
