@@ -1,4 +1,4 @@
-//! File:     src/constellations.rs
+//! File:     stratum-tools/src/constellations.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
 //!
@@ -9,7 +9,7 @@
 //!
 //! The file is plain text, one KEY=VALUE per line, and we parse it by hand.
 //! Everything we have is flat, so TOML would have cost us two crates to read
-//! eleven lines.
+//! a dozen lines.
 //!
 //! A bad value never stops the server.  We complain through Scribe, keep the
 //! default for that one setting, and carry on.
@@ -17,7 +17,9 @@
 //! main() calls `constellations::load()` right after Scribe is up, and
 //! `constellations::save()` on the way out.  Reading a setting looks like this:
 //!
-//!     let port = constellations::get().tcp_port;
+//! ```text
+//! let port = constellations::get().tcp_port;
+//! ```
 //!
 //! Constellations never touches the disk itself.  Reading and writing the
 //! file both go through DiskMan, which does the temp-file-and-rename dance
@@ -27,12 +29,20 @@
 //! added by hand is gone after the next shutdown, and so is any line we
 //! complained about at launch.  The values survive.  The decoration doesn't.
 //!
+//! While the server runs, the Launcher's config menu can show the settings,
+//! change one (`set()`), or read the file again (`load()` a second time).
+//! CONTENT_FOLDER is the one setting that can't change on a running server.
+//!
+//! Constellations also knows the content folder's layout: which folders go
+//! inside it, what they are called, and how to make them if they are
+//! missing.  So nothing else in the server has to know where anything lives.
+//!
 //! Adding a setting means touching four places, all of them in this file: the
 //! Settings struct, default_settings(), apply_setting() and file_text().
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::diskman::{self, StratumFile};
@@ -55,21 +65,31 @@ fn config_path() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// Inside the content folder
+// ---------------------------------------------------------------------------
+
+// The folders we expect to find inside CONTENT_FOLDER.  The names are fixed.
+// Only the content folder itself is a setting.
+const LOG_SUBFOLDER: &str = "logs";
+const ACCOUNT_SUBFOLDER: &str = "accounts";
+const SSL_SUBFOLDER: &str = "saved/ssl";
+
+// ---------------------------------------------------------------------------
 // The settings
 // ---------------------------------------------------------------------------
 
 /// Every global setting the server has.  The names match the keys in the
 /// config file, just in lowercase.
-// Most of these have no customer yet, and the compiler complains about fields
-// nobody reads, so we tell it to be quiet.
 // Rust note: `Clone` is what lets get() hand out a copy of the whole struct.
 // `PartialEq` lets the tests compare two of them with `==`.
 #[derive(Clone, PartialEq)]
 pub struct Settings {
+    /// The folder everything the server keeps on disk goes in, apart from the
+    /// config file.  Read once at launch.  See log_folder() and friends for
+    /// what goes inside it.
+    pub content_folder: PathBuf,
     /// The biggest a log file gets before Scribe starts a new one, in MB.
     pub max_log_size_mb: u64,
-    /// The folder Scribe keeps its log files in.
-    pub log_folder: PathBuf,
     /// The address the TCP side (authentication) listens on.
     pub tcp_host_address: IpAddr,
     pub tcp_port: u16,
@@ -82,6 +102,10 @@ pub struct Settings {
     pub color_info: Color,
     pub color_warn: Color,
     pub color_error: Color,
+    /// The command that opens the log window, with the rest of the command
+    /// (`tail -n +1 -F` on the log) added on the end.  Empty means no
+    /// window -- over SSH, say, where there is nowhere to open one.
+    pub log_window_command: String,
 }
 
 /// The built-in values.  These are what goes into a freshly generated config
@@ -91,8 +115,8 @@ pub struct Settings {
 // they turn into something more generic.
 fn default_settings() -> Settings {
     Settings {
+        content_folder: PathBuf::from("/opt/stratum/content"),
         max_log_size_mb: 500,
-        log_folder: PathBuf::from("/opt/stratum/content/logs/"),
         tcp_host_address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 84)),
         tcp_port: 9997,
         udp_host_address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 84)),
@@ -102,6 +126,7 @@ fn default_settings() -> Settings {
         color_info: Color::White,
         color_warn: Color::Yellow,
         color_error: Color::Red,
+        log_window_command: "konsole -e".to_string(),
     }
 }
 
@@ -118,6 +143,11 @@ struct Constellations {
     /// write while this is set.  If we never saw what was in the file, we have
     /// no business writing over it.
     file_unreadable: bool,
+    /// The CONTENT_FOLDER that save() writes to the file.  Usually the same
+    /// as the one in `settings`.  It differs when the file was edited and
+    /// reloaded on a running server -- the server keeps its old folder, and
+    /// the new one waits in here for the next launch.
+    next_content_folder: PathBuf,
 }
 
 // Same arrangement as Scribe: a file-scope global behind a lock.  `None`
@@ -135,12 +165,21 @@ static CONSTELLATIONS: Mutex<Option<Constellations>> = Mutex::new(None);
 /// read the file and can't write one either, and then we say so in the Error
 /// color and run on the built-in defaults.
 ///
-/// Calling it a second time reads the file again and replaces the settings.
-/// Nothing does that yet.
+/// Calling it a second time reads the file again and replaces the settings,
+/// including anything `set()` changed since.  The Launcher's Reload does
+/// that, so a hand edit to the file can be picked up without a restart.
+/// Everything but CONTENT_FOLDER, which stays what it was at launch.
 pub fn load() {
     let path = config_path();
     let mut settings = default_settings();
     let mut file_unreadable = false;
+
+    // Whatever content folder this run started with, if it has started.
+    let running_folder = {
+        let guard = CONSTELLATIONS.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.as_ref().map(|constellations| constellations.settings.content_folder.clone())
+    };
 
     match diskman::read_text(&path) {
         Ok(text) => {
@@ -172,6 +211,23 @@ pub fn load() {
         }
     }
 
+    // A reload can't move the content folder out from under a running
+    // server -- the log file, the accounts and the names list all came out
+    // of the old one.  So the old one stays, and the new one is kept for
+    // save() to write back, so the edit isn't lost at shutdown.
+    let next_content_folder = settings.content_folder.clone();
+    // (If the file couldn't be read, `settings` is only the defaults, and
+    // there is nothing to warn about.)
+    if let Some(running_folder) = running_folder {
+        if running_folder != settings.content_folder && !file_unreadable {
+            scribe::warn(Channel::Core,
+                         &format!("CONTENT_FOLDER is {} in the file now, but it only changes at \
+                         launch.  This run keeps {}.", settings.content_folder.display(),
+                                  running_folder.display()));
+        }
+        settings.content_folder = running_folder;
+    }
+
     // We only take the lock now, after all the logging is done, and let go of
     // it straight away.  Nobody ever waits on Constellations while it is
     // waiting on Scribe.
@@ -182,12 +238,13 @@ pub fn load() {
     *guard = Some(Constellations {
         settings,
         file_unreadable,
+        next_content_folder,
     });
 }
 
 /// Hands back a copy of the settings.  It is a copy so that nobody sits on
-/// the lock, and nobody has to think about who owns what.  It is eleven small
-/// values, so the copy costs nothing worth measuring.
+/// the lock, and nobody has to think about who owns what.  It is a dozen
+/// small values, so the copy costs nothing worth measuring.
 ///
 /// If this gets called before load() it returns the built-in defaults.  So
 /// there is no such thing as calling it too early, the same as Scribe.
@@ -201,6 +258,91 @@ pub fn get() -> Settings {
         Some(constellations) => constellations.settings.clone(),
         None => default_settings(),
     }
+}
+
+/// Changes one setting on the running server.  `line` is what the admin
+/// typed, `KEY=VALUE`, and it goes through the same checks as a line in the
+/// file.  An `Err` says what was wrong with it, in words, and nothing changed.
+///
+/// The change is in memory only until save() writes it at shutdown.  Nothing
+/// else is told about it: the Launcher hands Scribe its settings again, and
+/// the addresses and ports get picked up the next time the server starts.
+pub fn set(line: &str) -> Result<(), String> {
+    let mut guard = CONSTELLATIONS.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // If load() never ran there is nothing to change yet.  It always has by
+    // the time the Launcher is up, so this is a second lock on the door.
+    let constellations = match guard.as_mut() {
+        Some(constellations) => constellations,
+        None => return Err("The settings haven't been loaded yet.".to_string()),
+    };
+
+    let result = set_in(&mut constellations.settings, line);
+    drop(guard);
+
+    if result.is_ok() {
+        scribe::info(Channel::Core, &format!("Setting changed: {}", line.trim()));
+    }
+    result
+}
+
+/// The part of set() that doesn't need the lock or Scribe, so the tests can
+/// run it on a Settings of their own.
+fn set_in(settings: &mut Settings, line: &str) -> Result<(), String> {
+    let (key, value) = match line.split_once('=') {
+        Some(halves) => halves,
+        None => return Err("A setting is typed as KEY=VALUE, like TCP_PORT=9997.".to_string()),
+    };
+    let key = key.trim().to_ascii_uppercase();
+    if key == "CONTENT_FOLDER" {
+        return Err("CONTENT_FOLDER only changes at launch.  Change it in the config file \
+        and restart.".to_string());
+    }
+    apply_setting(settings, &key, value.trim())
+}
+
+/// Where Scribe keeps its log files.  Inside the content folder.
+pub fn log_folder() -> PathBuf {
+    get().content_folder.join(LOG_SUBFOLDER)
+}
+
+/// Where the account files live, one per account.  Inside the content folder.
+pub fn account_folder() -> PathBuf {
+    get().content_folder.join(ACCOUNT_SUBFOLDER)
+}
+
+/// Where the server's TLS certificate and key will live.  Inside the content
+/// folder.  Nothing uses it until the networking exists.
+pub fn ssl_folder() -> PathBuf {
+    get().content_folder.join(SSL_SUBFOLDER)
+}
+
+/// Makes every folder the content folder is supposed to have, if it isn't
+/// there already.  main() calls this once, after load().
+///
+/// Nothing in here stops the server.  A folder that can't be made is an
+/// Error in the log (DiskMan says why), and whoever needs it finds out for
+/// themselves -- the account folder stops the launch in account::start().
+pub fn make_folders() {
+    for folder in [log_folder(), account_folder(), ssl_folder()] {
+        // Rust note: `let _ =` throws the result away on purpose.  DiskMan
+        // has already logged anything that went wrong.
+        let _ = diskman::make_folder(&folder);
+    }
+}
+
+/// Every setting as a `KEY=VALUE` line, the way it would be written to the
+/// file, without the comments.  For the Launcher's "Show the settings".
+pub fn settings_text() -> String {
+    let mut text = String::new();
+    for line in file_text(&get()).lines() {
+        if !line.is_empty() && !line.starts_with('#') {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    text
 }
 
 /// Writes the settings that are in memory back to the config file.  main()
@@ -235,6 +377,11 @@ pub fn save() {
 
     let path = config_path();
 
+    // The file gets the content folder it should start with next time,
+    // which isn't always the one this run is using.
+    let mut settings = constellations.settings;
+    settings.content_folder = constellations.next_content_folder;
+
     if constellations.file_unreadable {
         scribe::warn(
             Channel::Core,
@@ -247,7 +394,7 @@ pub fn save() {
         return;
     }
 
-    match write_config_file(&constellations.settings) {
+    match write_config_file(&settings) {
         Ok(()) => {
             scribe::info(
                 Channel::Core,
@@ -312,7 +459,7 @@ fn parse_text(text: &str, settings: &mut Settings) -> Vec<String> {
         match apply_setting(settings, &key, value) {
             Ok(()) => {}
             Err(problem) => {
-                problems.push(format!("line {}: {}", line_number, problem));
+                problems.push(format!("line {}: {}  Ignored.", line_number, problem));
             }
         }
     }
@@ -322,14 +469,16 @@ fn parse_text(text: &str, settings: &mut Settings) -> Vec<String> {
 
 /// Puts one value into the settings, if the key is one we know and the value
 /// makes sense for it.  If not, the settings are left alone and the complaint
-/// comes back as the error.
+/// comes back as the error.  The complaint doesn't say what happens next,
+/// because that depends on who asked: a line in the file is ignored, and a
+/// change typed into the Launcher just doesn't happen.
 // Rust note: the `?` on the end of each line means "if that failed, stop here
 // and return its error to whoever called us".  So a bad value never gets as
 // far as the assignment.
 fn apply_setting(settings: &mut Settings, key: &str, value: &str) -> Result<(), String> {
     match key {
+        "CONTENT_FOLDER" => settings.content_folder = parse_folder(key, value)?,
         "MAX_LOG_SIZE_MB" => settings.max_log_size_mb = parse_size_mb(key, value)?,
-        "LOG_FOLDER" => settings.log_folder = parse_folder(key, value)?,
         "TCP_HOST_ADDRESS" => settings.tcp_host_address = parse_address(key, value)?,
         "TCP_PORT" => settings.tcp_port = parse_port(key, value)?,
         "UDP_HOST_ADDRESS" => settings.udp_host_address = parse_address(key, value)?,
@@ -339,8 +488,11 @@ fn apply_setting(settings: &mut Settings, key: &str, value: &str) -> Result<(), 
         "COLOR_INFO" => settings.color_info = parse_color(key, value)?,
         "COLOR_WARN" => settings.color_warn = parse_color(key, value)?,
         "COLOR_ERROR" => settings.color_error = parse_color(key, value)?,
+        // Anything goes here, empty included.  There's no way to check a
+        // command short of running it.
+        "LOG_WINDOW_COMMAND" => settings.log_window_command = value.to_string(),
         _ => {
-            return Err(format!("there is no setting called {}.  Ignored.", key));
+            return Err(format!("There is no setting called {}.", key));
         }
     }
 
@@ -356,9 +508,11 @@ fn parse_size_mb(key: &str, value: &str) -> Result<u64, String> {
     }
 }
 
+/// A full path, starting from `/`.  A relative one would depend on which
+/// folder the server happened to be started from.
 fn parse_folder(key: &str, value: &str) -> Result<PathBuf, String> {
-    if value.is_empty() {
-        return Err(bad_value(key, value, "a folder"));
+    if !Path::new(value).is_absolute() {
+        return Err(bad_value(key, value, "a full path, like /opt/stratum/content"));
     }
     Ok(PathBuf::from(value))
 }
@@ -407,7 +561,7 @@ fn parse_color(key: &str, value: &str) -> Result<Color, String> {
 /// place.
 fn bad_value(key: &str, value: &str, wanted: &str) -> String {
     format!(
-        "{} is \"{}\", and it needs to be {}.  Keeping the default.",
+        "{} is \"{}\", and it needs to be {}.",
         key, value, wanted
     )
 }
@@ -444,8 +598,10 @@ fn file_text(settings: &Settings) -> String {
     and again\n");
     text.push_str("# every time the server shuts down.  So change the values while \
     the server\n");
-    text.push_str("# is stopped, and don't get attached to any comments you add.  \
-    They won't\n");
+    text.push_str("# is stopped, or change them here and pick Reload in the \
+    Launcher's config\n");
+    text.push_str("# menu.  Either way, don't get attached to any comments you \
+    add.  They won't\n");
     text.push_str("# survive the next shutdown.\n");
     text.push_str("#\n");
     text.push_str("# One setting per line, KEY=VALUE.  A line that starts with # is \
@@ -457,13 +613,18 @@ fn file_text(settings: &Settings) -> String {
     text.push_str("# back to the built-in default, and the server log says so.\n");
     text.push_str("\n");
 
+    text.push_str("# The folder the server keeps everything in: logs/, accounts/ and \
+    saved/ssl/.\n");
+    text.push_str("# Missing folders get made at launch.  This one only changes at \
+    launch, and it\n");
+    text.push_str("# doesn't move this file, which always lives in \
+    /opt/stratum/content/config/.\n");
+    text.push_str(&format!("CONTENT_FOLDER={}\n", settings.content_folder.display()));
+    text.push_str("\n");
+
     text.push_str("# The biggest a log file gets before Scribe starts a new one, in \
     megabytes.\n");
     text.push_str(&format!("MAX_LOG_SIZE_MB={}\n", settings.max_log_size_mb));
-    text.push_str("\n");
-
-    text.push_str("# The folder Scribe keeps its log files in.\n");
-    text.push_str(&format!("LOG_FOLDER={}\n", settings.log_folder.display()));
     text.push_str("\n");
 
     text.push_str("# Where the TCP side (authentication) listens.  An IP address, \
@@ -489,6 +650,15 @@ fn file_text(settings: &Settings) -> String {
     text.push_str(&format!("COLOR_INFO={}\n", color_name(settings.color_info)));
     text.push_str(&format!("COLOR_WARN={}\n", color_name(settings.color_warn)));
     text.push_str(&format!("COLOR_ERROR={}\n", color_name(settings.color_error)));
+    text.push_str("\n");
+
+    text.push_str("# The command that opens the log window when the Launcher \
+    starts.  The\n");
+    text.push_str("# server puts `tail -n +1 -F` and the log's path on the end.  \
+    Leave it\n");
+    text.push_str("# empty for no window (over SSH, say), and run that tail \
+    yourself.\n");
+    text.push_str(&format!("LOG_WINDOW_COMMAND={}\n", settings.log_window_command));
 
     text
 }
@@ -554,8 +724,8 @@ mod tests {
         // field.  Otherwise a line that silently failed to parse would still
         // "match".
         let written = Settings {
+            content_folder: PathBuf::from("/tmp/somewhere else/content"),
             max_log_size_mb: 7,
-            log_folder: PathBuf::from("/tmp/somewhere else/logs"),
             tcp_host_address: "127.0.0.1".parse().unwrap(),
             tcp_port: 1111,
             udp_host_address: "::1".parse().unwrap(),
@@ -565,6 +735,7 @@ mod tests {
             color_info: Color::Blue,
             color_warn: Color::Magenta,
             color_error: Color::Gray,
+            log_window_command: "xterm -hold -e".to_string(),
         };
 
         let mut read_back = default_settings();
@@ -576,8 +747,8 @@ mod tests {
 
     #[test]
     fn jacobs_file_reads_clean() {
-        let text = "MAX_LOG_SIZE_MB=500\n\
-                    LOG_FOLDER=/opt/stratum/content/logs/\n\
+        let text = "CONTENT_FOLDER=/opt/stratum/content\n\
+                    MAX_LOG_SIZE_MB=500\n\
                     TCP_HOST_ADDRESS=10.0.0.84\n\
                     TCP_PORT=9997\n\
                     UDP_HOST_ADDRESS=10.0.0.84\n\
@@ -611,12 +782,13 @@ mod tests {
                     UDP_PORT=0\n\
                     TCP_HOST_ADDRESS=localhost\n\
                     SHOW_DEBUG=maybe\n\
-                    LOG_FOLDER=\n";
+                    CONTENT_FOLDER=\n\
+                    CONTENT_FOLDER=stratum/content\n";
 
         let mut settings = default_settings();
         let problems = parse_text(text, &mut settings);
 
-        assert_eq!(problems.len(), 8);
+        assert_eq!(problems.len(), 9);
         assert!(settings == default_settings());
     }
 
@@ -646,9 +818,53 @@ mod tests {
     #[test]
     fn a_value_can_have_an_equals_sign_in_it() {
         let mut settings = default_settings();
-        let problems = parse_text("LOG_FOLDER=/tmp/a=b/logs\n", &mut settings);
+        let problems = parse_text("CONTENT_FOLDER=/tmp/a=b/content\n", &mut settings);
 
         assert!(problems.is_empty());
-        assert_eq!(settings.log_folder, PathBuf::from("/tmp/a=b/logs"));
+        assert_eq!(settings.content_folder, PathBuf::from("/tmp/a=b/content"));
+    }
+
+    #[test]
+    fn an_empty_log_window_command_means_no_window() {
+        let mut written = default_settings();
+        written.log_window_command = String::new();
+
+        let mut read_back = default_settings();
+        let problems = parse_text(&file_text(&written), &mut read_back);
+
+        assert!(problems.is_empty());
+        assert_eq!(read_back.log_window_command, "");
+    }
+
+    #[test]
+    fn an_old_log_folder_line_is_ignored() {
+        // Every config file written before CONTENT_FOLDER has one of these.
+        let mut settings = default_settings();
+        let problems = parse_text("LOG_FOLDER=/opt/stratum/content/logs/\n", &mut settings);
+
+        assert_eq!(problems.len(), 1);
+        assert!(settings == default_settings());
+    }
+
+    #[test]
+    fn a_change_typed_into_the_launcher() {
+        let mut settings = default_settings();
+
+        assert_eq!(set_in(&mut settings, "tcp_port = 1234"), Ok(()));
+        assert_eq!(settings.tcp_port, 1234);
+
+        // A bad value, an unknown key and no `=` all leave things alone.
+        assert!(set_in(&mut settings, "TCP_PORT=99999").is_err());
+        assert!(set_in(&mut settings, "WIBBLE=3").is_err());
+        assert!(set_in(&mut settings, "TCP_PORT 4000").is_err());
+        assert_eq!(settings.tcp_port, 1234);
+
+        // The content folder can't be changed from the Launcher at all, not
+        // even to a good value.
+        assert!(set_in(&mut settings, "content_folder=/tmp/elsewhere").is_err());
+
+        let mut expected = default_settings();
+        expected.tcp_port = 1234;
+        assert!(settings == expected);
     }
 }

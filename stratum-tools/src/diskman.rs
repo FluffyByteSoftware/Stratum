@@ -3,8 +3,8 @@
 //! Author:   Jacob Chacko
 //!
 //! DiskMan, the Disk Manager.  The one place the server goes through to
-//! replace a whole file, and to read one back.  A file is a path and its
-//! contents as bytes (a StratumFile).
+//! replace a whole file, to read one back, and to delete one.  A file is a
+//! path and its contents as bytes (a StratumFile).
 //!
 //! We never write a file in place.  We write `path.tmp`, force it onto the
 //! disk, and then rename it over `path`.  If the server dies halfway through,
@@ -395,6 +395,63 @@ pub fn write_file(file: &StratumFile) -> io::Result<()> {
 
     Ok(())
 }
+
+/// Deletes a file for good, and doesn't come back until the deletion is safe
+/// on the disk.  A leftover `path.tmp` from an old crash goes too.
+///
+/// Same rule as write_file(): this is for paths that never go through
+/// write_later().  A file still waiting in the cache would get written back
+/// a moment after we deleted it, so if the path is in the cache we refuse,
+/// and say so.
+///
+/// A file that isn't there comes back as `NotFound` and isn't logged, the
+/// same as a read.  The caller knows whether that is a problem.
+#[track_caller]
+pub fn delete_file(path: &Path) -> io::Result<()> {
+    if cached_copy(path).is_some() {
+        let error = io::Error::new(io::ErrorKind::InvalidInput,
+                                   "it is still waiting in the cache to be written");
+        return Err(complain(&format!("DiskMan won't delete {}", path.display()), error));
+    }
+
+    if let Err(error) = fs::remove_file(path) {
+        if error.kind() == io::ErrorKind::NotFound {
+            return Err(error);
+        }
+        return Err(complain(&format!("DiskMan can't delete {}", path.display()), error));
+    }
+    let _ = fs::remove_file(temp_path_for(path));
+
+    // Same as after a rename.  The file is gone from the folder's list of
+    // names, but only in memory until the folder is forced onto the disk.
+    // A power cut before that and the file comes back.  The file is gone
+    // either way by now, so this is a Warn and the delete still counts.
+    let folder = folder_of(path);
+    if let Err(error) = sync_folder(&folder) {
+        scribe::warn(Channel::Core,
+                     &format!("DiskMan deleted {}, but couldn't force the \
+                     folder onto the disk ({}).  A power cut in the next few \
+                     seconds could bring it back.", path.display(), error));
+    }
+
+    Ok(())
+}
+
+/// Makes a folder, and any folder above it that is missing.  It says so in
+/// the log when it really made one, so the first launch shows what got
+/// built.  A folder that is already there is fine, and quiet.
+#[track_caller]
+pub fn make_folder(folder: &Path) -> io::Result<()> {
+    if folder.is_dir() {
+        return Ok(());
+    }
+    if let Err(error) = fs::create_dir_all(folder) {
+        return Err(complain(&format!("DiskMan can't make the folder {}", folder.display()), error));
+    }
+    scribe::info(Channel::Core, &format!("DiskMan made the folder {}", folder.display()));
+    Ok(())
+}
+
 
 /// Writes the bytes to a brand new file (or wipes an old one) and doesn't
 /// come back until the operating system says they are on the disk.
@@ -872,6 +929,28 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_file_is_gone() {
+        let folder = test_folder("delete");
+        let path = folder.join("jacob.act");
+
+        write_file(&StratumFile {
+            path: path.clone(),
+            contents: b"{}".to_vec(),
+        }).unwrap();
+        // What a crash in the middle of an old save would leave behind.
+        fs::write(temp_path_for(&path), "half").unwrap();
+
+        delete_file(&path).unwrap();
+        assert!(!path.exists());
+        assert!(!temp_path_for(&path).exists());
+
+        // A second time, there is nothing there to delete.
+        assert_eq!(delete_file(&path).unwrap_err().kind(), io::ErrorKind::NotFound);
+
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
     fn temp_names_and_folders() {
         assert_eq!(temp_path_for(Path::new("/opt/stratum/content/config/stratum.conf")),
                    PathBuf::from("/opt/stratum/content/config/stratum.conf.tmp"));
@@ -1040,7 +1119,7 @@ mod tests {
 
     /// The same temp-and-rename, minus both syncs.  The floor we can't beat.
     fn bench_no_sync(folder: &Path, pass: u32) {
-        let files = 
+        let files =
             bench_files(folder, &format!("nosync{}", pass), BENCH_SAVES);
 
         let started = Instant::now();

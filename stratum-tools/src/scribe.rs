@@ -17,18 +17,26 @@
 //!
 //! A call looks like this:
 //!
-//!     scribe::info(Channel::Core, "Listening on 7777");
+//! ```text
+//! scribe::info(Channel::Core, "Listening on 7777");
+//! ```
 //!
 //! Scribe has to be up before anything else, and that includes the config
 //! file.  So it starts on built-in defaults, and main() hands it the real
 //! settings through `scribe::initialize()` once Constellations has loaded.
 //! Scribe doesn't know Constellations exists.  main() is the only one who
 //! knows both.
+//!
+//! Once the Launcher's menu is up, the terminal belongs to the menu, and
+//! Scribe goes quiet there (`quiet_terminal()`).  The log gets read in its
+//! own window instead, through a link called `latest.log` in the log folder
+//! that always points at the file we are writing to.  So nothing is missed,
+//! it just isn't in the admin's way.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::panic::Location;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -135,6 +143,10 @@ pub struct ScribeConfig {
     pub max_file_bytes: u64,
 }
 
+/// The name of the link in the log folder that always points at the log file
+/// we are writing to.  The log window runs `tail -F` on it.
+pub const LATEST_LINK_NAME: &str = "latest.log";
+
 /// What Scribe runs on until initialize() hands it the real settings.  In a
 /// normal launch that is only the first few lines.
 fn default_config() -> ScribeConfig {
@@ -171,6 +183,13 @@ struct Scribe {
     /// Set when the log file could not be opened or written.  After that we
     /// only print to the terminal.
     file_gave_up: bool,
+    /// Set by the Launcher while its menu owns the terminal.  Messages still
+    /// go to the file, just not to the screen.
+    terminal_quiet: bool,
+    /// Set when the `latest.log` link couldn't be pointed at the current
+    /// file.  The log window follows that link, so it has stopped showing
+    /// anything new.
+    link_broken: bool,
 }
 
 // Rust note: there are no static classes, so this is a file-scope global, the
@@ -188,6 +207,8 @@ fn new_scribe() -> Scribe {
         file_counter: 0,
         file_bytes: 0,
         file_gave_up: false,
+        terminal_quiet: false,
+        link_broken: false,
     }
 }
 
@@ -241,6 +262,22 @@ pub fn initialize(config: ScribeConfig) {
     drop(guard);
 
     log(Priority::Info, Channel::Core, "Scribe has its settings from the config file.");
+}
+
+/// Stops Scribe printing to the terminal (true), or starts it again (false).
+/// The Launcher turns it on while its menu is up, so log lines don't land in
+/// the middle of whatever the admin is typing.  Everything still goes to the
+/// log file, and the log window shows it from there.
+///
+/// Two things ignore this and print anyway: a log file we had to give up on,
+/// and a `latest.log` link we couldn't update.  Either way the log window
+/// has stopped showing new lines, and a message nobody can see anywhere is
+/// worse than one that interrupts the menu.
+pub fn quiet_terminal(quiet: bool) {
+    let mut guard = SCRIBE.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let scribe = guard.get_or_insert_with(new_scribe);
+    scribe.terminal_quiet = quiet;
 }
 
 #[track_caller]
@@ -297,8 +334,12 @@ pub fn log(priority: Priority, channel: Channel, message: &str) {
     let now = utc_now();
     let line = format_line(&now, priority, channel, message, caller.file(), caller.line());
 
-    write_to_terminal(&scribe.config, priority, &line);
+    // The file first, so we know whether it worked before deciding whether
+    // the terminal has to show this line too.
     write_to_file(scribe, &now, &line);
+    if !scribe.terminal_quiet || scribe.file_gave_up || scribe.link_broken {
+        write_to_terminal(&scribe.config, priority, &line);
+    }
 
     // Rust note: no unlock call.  The lock lets go when `guard` goes out of
     // scope, which is right here.
@@ -310,7 +351,9 @@ pub fn log(priority: Priority, channel: Channel, message: &str) {
 
 /// Builds one line of log.  It comes out like this:
 ///
-///     2026-09-21T20:14:07.417Z [INFO ] [Core    ] Listening on 7777  (src/main.rs:31)
+/// ```text
+/// 2026-09-21T20:14:07.417Z [INFO ] [Core    ] Listening on 7777  (stratum-launcher/src/main.rs:31)
+/// ```
 ///
 /// The tags are padded so the messages line up in a column.  The file and
 /// line go last because they are a different length every time, and anywhere
@@ -426,6 +469,31 @@ fn find_latest_counter(config: &ScribeConfig, now: &UtcTime) -> u32 {
     counter
 }
 
+/// Points the `latest.log` link at the log file we just opened.  We make the
+/// new link under a temp name and rename it over the old one, the same trick
+/// DiskMan uses for files, so there is never a moment with no link at all.
+/// `tail -F` notices the link now leads somewhere else and follows it.
+///
+/// The link holds only the file's name, not its whole path, so it still
+/// works if somebody moves the whole log folder.
+// Rust note: `symlink` lives under `std::os::unix`, because only Unix-style
+// systems have links like this.  The compiler would refuse this line on
+// Windows.  Nothing has been tried there anyway.
+fn point_latest_link(log_dir: &Path, target: &Path) -> io::Result<()> {
+    let name = match target.file_name() {
+        Some(name) => name,
+        None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name")),
+    };
+
+    let link = log_dir.join(LATEST_LINK_NAME);
+    let temp = log_dir.join(format!("{}.tmp", LATEST_LINK_NAME));
+
+    // A temp link left over from a crash would stop us making a new one.
+    let _ = fs::remove_file(&temp);
+    std::os::unix::fs::symlink(name, &temp)?;
+    fs::rename(&temp, &link)
+}
+
 /// Opens (or creates) the log file that `file_day` and `file_counter` point
 /// at, making the log folder first if it isn't there.
 fn open_log_file(scribe: &mut Scribe, now: &UtcTime) {
@@ -454,6 +522,16 @@ fn open_log_file(scribe: &mut Scribe, now: &UtcTime) {
                 Err(_) => 0,
             };
             scribe.file = Some(file);
+
+            match point_latest_link(&scribe.config.log_dir, &path) {
+                Ok(()) => scribe.link_broken = false,
+                Err(problem) => {
+                    scribe.link_broken = true;
+                    let reason = format!("Can't point {} at {}: {}.  The log window won't show anything \
+new, so the terminal gets everything again.", LATEST_LINK_NAME, path.display(), problem);
+                    complain(scribe, &reason);
+                }
+            }
         }
         Err(problem) => {
             let reason = format!(
@@ -480,14 +558,40 @@ fn give_up_on_file(scribe: &mut Scribe, reason: &str) {
     // the lock, and asking for the same lock twice would hang forever.
     let now = utc_now();
     // This complaint is Scribe's own, so the file and line are ours.
-    let line = format_line(&now, Priority::Error, Channel::Core, reason, file!(), 
+    let line = format_line(&now, Priority::Error, Channel::Core, reason, file!(),
                            line!());
     write_to_terminal(&scribe.config, Priority::Error, &line);
+}
+
+/// Scribe complaining about itself, in the Error color, on the terminal no
+/// matter what, and in the log file if we have one open.  Same reason as
+/// give_up_on_file() for not going through log().
+fn complain(scribe: &mut Scribe, reason: &str) {
+    let now = utc_now();
+    let line = format_line(&now, Priority::Error, Channel::Core, reason, file!(),
+                           line!());
+    write_to_terminal(&scribe.config, Priority::Error, &line);
+
+    if let Some(file) = scribe.file.as_mut() {
+        if writeln!(file, "{}", line).is_ok() {
+            scribe.file_bytes += line.len() as u64 + 1;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Time
 // ---------------------------------------------------------------------------
+
+/// A time in seconds since 1970 as a date a person can read, like
+/// `2026-09-21T20:14:07Z`.  No milliseconds -- this is for times we store,
+/// like when an account was made.  The calendar math already lives here, so
+/// anything that shows a stored time borrows it.
+pub fn time_text(total_seconds: u64) -> String {
+    let time = utc_from_seconds(total_seconds, 0);
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            time.year, time.month, time.day, time.hour, time.minute, time.second)
+}
 
 /// A moment in UTC, broken into the pieces we print.
 struct UtcTime {
@@ -624,5 +728,35 @@ mod tests {
     fn end_of_a_year() {
         assert_eq!(date_of(1798761599), (2026, 12, 31));
         assert_eq!(date_of(1798761600), (2027, 1, 1));
+    }
+
+    #[test]
+    fn stored_times_as_text() {
+        assert_eq!(time_text(0), "1970-01-01T00:00:00Z");
+        assert_eq!(time_text(1790021647), "2026-09-21T20:14:07Z");
+    }
+
+    #[test]
+    fn latest_link_follows_the_newest_file() {
+        // A folder of our own under /tmp, not the real log folder.
+        let dir = std::env::temp_dir().join(format!("stratum_link_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let first = dir.join("2026.09.21.log");
+        let second = dir.join("2026.09.21.1.log");
+        fs::write(&first, "first\n").unwrap();
+        fs::write(&second, "second\n").unwrap();
+
+        let link = dir.join(LATEST_LINK_NAME);
+        point_latest_link(&dir, &first).unwrap();
+        assert_eq!(fs::read_to_string(&link).unwrap(), "first\n");
+
+        // Pointing it again replaces the old link instead of failing.
+        point_latest_link(&dir, &second).unwrap();
+        assert_eq!(fs::read_to_string(&link).unwrap(), "second\n");
+        assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("2026.09.21.1.log"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

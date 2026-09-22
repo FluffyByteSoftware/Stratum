@@ -1,21 +1,18 @@
-//! File:     src/main.rs
+//! File:     stratum-launcher/src/main.rs
 //! Project:  Stratum Core
 //! Author:   Jacob Chacko
 //!
 //! Entry point.  Core is the driver: it starts up, brings the other pieces
 //! online in order, and gets the game ready for play.  Right now the pieces
-//! are Scribe, Constellations, Security, Account, and DiskMan.
+//! are Scribe, Constellations, Security, Launcher, Account, and DiskMan.
 
-// Rust note: `mod scribe;` tells the compiler that src/scribe.rs is part of
-// this program.  A file that isn't named like this doesn't get compiled at
-// all, no matter what folder it is sitting in.
-mod scribe;
-mod constellations;
-mod diskman;
-mod security;
-mod account;
+use stratum_tools::{account, constellations, diskman, scribe};
+use stratum_tools::scribe::{Channel, ScribeConfig};
 
-use scribe::{Channel, ScribeConfig};
+// Rust note: `mod launcher;` tells the compiler that src/launcher.rs is part
+// of this program.  The tools aren't named here any more -- they are their
+// own crate now, and the `use` lines below reach into it.
+mod launcher;
 
 /// The main entry point for the server.  This is where the program starts
 /// running.  It is the first function called, and the last one to return.
@@ -32,6 +29,10 @@ fn main() {
     // config file is loaded, Scribe gets the real ones.
     constellations::load();
     initialize_scribe();
+    
+    // The folders inside the content folder: logs, accounts, saved/ssl.
+    // Any that are missing get made now.
+    constellations::make_folders();
 
     let settings = constellations::get();
     scribe::info(Channel::Core, &format!("TCP will listen on {}:{}",
@@ -47,6 +48,9 @@ fn main() {
         std::process::exit(1);
     }
 
+    // the admin's menu. It runs until they pick Q, and then we shut down.
+    launcher::run();
+    
     scribe::info(Channel::Core, "Shutting down...");
     
     // Last thing on the way out: whatever settings are in memory go back to
@@ -69,7 +73,7 @@ fn initialize_scribe() {
         color_info: settings.color_info,
         color_warn: settings.color_warn,
         color_error: settings.color_error,
-        log_dir: settings.log_folder,
+        log_dir: constellations::log_folder(),
         // The config file talks in megabytes and Scribe counts in bytes.
         // `saturating_mul` stops at the biggest number there is instead of
         // wrapping around, in case somebody types a silly size.

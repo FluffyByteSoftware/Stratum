@@ -1,19 +1,22 @@
-[package]
-name = "server"
-version = "0.1.0"
-edition = "2024"
+# File:     Cargo.toml
+# Project:  Stratum Core
+# Author:   Jacob Chacko
+#
+# The workspace.  It names the crates, and holds the settings that have to
+# apply to all of them at once.
 
-[dependencies]
-argon2 = { version = "0.6" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+[workspace]
+members = ["stratum-tools", "stratum-launcher" , "stratum-networking"]
+resolver = "3"
 
 # Argon2 is slow on purpose, but a debug build makes it slow by accident too
 # -- about 20 times slower.  These two lines build argon2 and blake2 (the
 # hash it is made of) optimized, even in a debug build, so `cargo run` and
-# `cargo test` hash at the speed the real server will.
+# `cargo test` hash at the speed the real server will.  They have to live in
+# this file.  Cargo ignores profiles in a member's Cargo.toml.
 [profile.dev.package.argon2]
 opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+ 

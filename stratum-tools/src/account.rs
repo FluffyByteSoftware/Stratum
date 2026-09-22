@@ -4,7 +4,7 @@
 //!
 //! Accounts.  One JSON file per account, named after the username, holding
 //! the password hash and the list of characters on the account.  The server
-//! admin makes the accounts (from the console, once there is a console).
+//! admin makes and deletes the accounts, from the Launcher's account menu.
 //! This is a game between friends, not a sign-up page.
 //!
 //! An account file is always written with `diskman::write_file()`, never
@@ -37,13 +37,11 @@ use serde::{Deserialize, Serialize};
 use crate::diskman::{self, StratumFile};
 use crate::scribe::{self, Channel};
 use crate::security;
+use crate::constellations;
 
 // ---------------------------------------------------------------------------
 // The numbers
 // ---------------------------------------------------------------------------
-
-/// Where the account files live.  One file per account, `<username>.act`.
-const ACCOUNT_FOLDER: &str = "/opt/stratum/content/accounts";
 const ACCOUNT_EXTENSION: &str = "act";
 
 const MIN_USERNAME_CHARS: usize = 4;
@@ -157,7 +155,10 @@ pub fn start() -> bool {
     // Rust note: `fs::read_dir` hands back the folder's entries one at a
     // time.  Listing a folder isn't writing one, so it doesn't need DiskMan.
     // Every file we then open still goes through DiskMan.
-    match fs::read_dir(ACCOUNT_FOLDER) {
+    
+    let folder = constellations::account_folder();
+    
+    match fs::read_dir(&folder) {
         Ok(entries) => {
             for entry in entries {
                 let path = match entry {
@@ -187,7 +188,8 @@ Skipped it.", path.display()));
                     Ok(Some(account)) => {
                         for pawn in &account.characters {
                             if !names.character_names.insert(pawn.name.clone()) {
-                                scribe::error(Channel::Security, &format!("There is more than one character \
+                                scribe::error(Channel::Security, 
+                                              &format!("There is more than one character \
 called {}.  The second one is on account {}.", display_name(&pawn.name), username));
                             }
                         }
@@ -199,7 +201,8 @@ called {}.  The second one is on account {}.", display_name(&pawn.name), usernam
                     Err(_) => {
                         // load_account() has already said what is wrong with
                         // it.  This is the part it doesn't know.
-                        scribe::error(Channel::Security, &format!("Account {} can't be read, so its \
+                        scribe::error(Channel::Security, 
+                                      &format!("Account {} can't be read, so its \
 character names aren't known.  One of them could be taken again.", username));
                     }
                 }
@@ -208,8 +211,9 @@ character names aren't known.  One of them could be taken again.", username));
         Err(error) => {
             // No folder means no accounts yet.  The first save makes it.
             if error.kind() != io::ErrorKind::NotFound {
-                scribe::error(Channel::Security, &format!("Can't read the account folder {}: {}",
-                                                          ACCOUNT_FOLDER, error));
+                scribe::error(Channel::Security, 
+                              &format!("Can't read the account folder {}: {}",
+                                                          folder.display(), error));
                 return false;
             }
         }
@@ -268,6 +272,38 @@ fn release_in(names: &mut Names, kind: NameKind, name: &str) {
         NameKind::Username => names.usernames.remove(name),
         NameKind::CharacterName => names.character_names.remove(name),
     };
+}
+
+/// Hands back the username and every character name on an account, all
+/// together, under one lock.  For a deleted account.
+fn release_account_names(account: &Account) {
+    let mut guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(names) = guard.as_mut() {
+        release_account_in(names, account);
+    }
+}
+
+/// The part of `release_account_names()` that doesn't need the lock.
+fn release_account_in(names: &mut Names, account: &Account) {
+    release_in(names, NameKind::Username, &account.username);
+    for pawn in &account.characters {
+        release_in(names, NameKind::CharacterName, &pawn.name);
+    }
+}
+
+/// Every username on the server, in alphabetical order.  Straight from the
+/// names list, so it doesn't touch the disk.  Empty if `start()` never ran.
+pub fn list_usernames() -> Vec<String> {
+    let guard = NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut usernames: Vec<String> = match guard.as_ref() {
+        Some(names) => names.usernames.iter().cloned().collect(),
+        None => Vec::new(),
+    };
+    drop(guard);
+
+    // Rust note: a HashSet keeps no order at all, so we sort the copy.
+    usernames.sort();
+    usernames
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +446,40 @@ pub fn save_account(account: &Account) -> io::Result<()> {
     })
 }
 
+/// Deletes an account for good: the file goes, and the username and every
+/// character name on it are free to be taken again.  For the admin.  An
+/// `Err` is a message saying why not, and nothing was deleted.
+///
+/// The file goes first and the names second.  That way a name is never free
+/// while a file that uses it is still on the disk.
+///
+/// A damaged account file is refused.  Its character names can't be read, so
+/// they couldn't be handed back, and they would stay taken by an account
+/// that doesn't exist.  Somebody has to look at that file by hand.
+pub fn delete_account(username: &str) -> Result<(), String> {
+    let account = match load_account(username) {
+        Ok(Some(account)) => account,
+        Ok(None) => return Err(format!("There is no account called {}.", username.to_ascii_lowercase())),
+        // load_account() has already logged what is wrong with it.
+        Err(problem) => return Err(format!("{}  It wasn't deleted.", problem)),
+    };
+
+    match diskman::delete_file(&account_path(&account.username)) {
+        Ok(()) => {}
+        // Gone between the read and now.  The end result is the same.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!("Couldn't delete the account file: {}", error));
+        }
+    }
+
+    release_account_names(&account);
+
+    scribe::info(Channel::Security, &format!("Account {} deleted, with {} character(s).",
+                                             account.username, account.characters.len()));
+    Ok(())
+}
+
 /// Adds a new character to the account and saves the account.  Hands back
 /// the new character's UUID.  The name has to be free on the whole server.
 /// If the save fails, the character comes back off again and the name is
@@ -443,6 +513,27 @@ pub fn add_character(account: &mut Account, name: &str) -> Result<String, String
     scribe::info(Channel::Security, &format!("Character {} added to account {}.",
                                              display_name(&name), account.username));
     Ok(uuid)
+}
+
+/// Gives the account a new password and saves it.  For the admin, when a
+/// player has forgotten theirs.  The new password has to follow Security's
+/// rules, and only its hash is kept, the same as when the account was made.
+/// If the save fails, the old hash goes back, so what is in memory still
+/// matches what is on the disk, and the old password still works.
+pub fn change_password(account: &mut Account, new_password: &str) -> Result<(), String> {
+    security::check_password_rules(new_password)?;
+
+    // About 85 ms.
+    let new_hash = security::hash_password(new_password)?;
+    let old_hash = std::mem::replace(&mut account.password_hash_string, new_hash);
+
+    if let Err(error) = save_account(account) {
+        account.password_hash_string = old_hash;
+        return Err(format!("Couldn't save the account file: {}", error));
+    }
+
+    scribe::info(Channel::Security, &format!("Password changed for account {}.", account.username));
+    Ok(())
 }
 
 /// Stamps the account with the time of this login and saves it.  Only for a
@@ -598,7 +689,7 @@ pub fn display_name(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn account_path(username: &str) -> PathBuf {
-    PathBuf::from(ACCOUNT_FOLDER).join(format!("{}.{}", username, ACCOUNT_EXTENSION))
+    constellations::account_folder().join(format!("{}.{}", username, ACCOUNT_EXTENSION))
 }
 
 /// The account as the text that goes in its file.  Indented JSON, so a
@@ -800,6 +891,27 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_account_hands_back_every_name() {
+        let mut names = Names {
+            usernames: HashSet::new(),
+            character_names: HashSet::new(),
+        };
+        let account = sample_account();
+
+        reserve_in(&mut names, NameKind::Username, "jacob").unwrap();
+        reserve_in(&mut names, NameKind::CharacterName, "aldric").unwrap();
+        reserve_in(&mut names, NameKind::CharacterName, "mira").unwrap();
+        // Somebody else's, which has to stay taken.
+        reserve_in(&mut names, NameKind::CharacterName, "brannoc").unwrap();
+
+        release_account_in(&mut names, &account);
+
+        assert!(names.usernames.is_empty());
+        assert_eq!(names.character_names.len(), 1);
+        assert!(names.character_names.contains("brannoc"));
+    }
+
+    #[test]
     fn display_names() {
         assert_eq!(display_name("aldric"), "Aldric");
         assert_eq!(display_name("m"), "M");
@@ -853,9 +965,10 @@ mod tests {
     fn damage_report_never_quotes_the_hash() {
         // The hash moved into a field that wants a number.  serde_json's own
         // message would quote it back at us.  Ours mustn't.
-        let text = "{ \"username\": \"jacob\", \"password_hash_string\": \"x\", \"email\": \"\", \
-                    \"real_name\": \"\", \"birthday\": \"\", \"account_uid\": \"x\", \"characters\": [], \
-                    \"created_at\": \"$argon2id$v=19$secret\", \"last_login\": 0 }";
+        let text = 
+            "{ \"username\": \"jacob\", \"password_hash_string\": \"x\", \"email\": \"\", \
+               \"real_name\": \"\", \"birthday\": \"\", \"account_uid\": \"x\", \"characters\": [], \
+               \"created_at\": \"$argon2id$v=19$secret\", \"last_login\": 0 }";
         let problem = account_from_text(text, "jacob").unwrap_err();
         assert!(!problem.contains("argon2"));
     }

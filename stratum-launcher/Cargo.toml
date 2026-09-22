@@ -1,0 +1,15 @@
+# File:     stratum-launcher/Cargo.toml
+# Project:  Stratum Core
+# Author:   Jacob Chacko
+#
+# The program.  It starts the tools, hands the terminal to the admin's menu,
+# and shuts everything down when the menu returns.
+
+[package]
+name = "stratum-launcher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+stratum-tools = { path = "../stratum-tools" }
+rpassword = "7.5.4"

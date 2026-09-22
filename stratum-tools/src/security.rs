@@ -15,7 +15,9 @@
 //! What goes in the account file is one line of text in the standard "PHC
 //! string" format, and it carries its own settings:
 //!
-//!     $argon2id$v=19$m=65536,t=2,p=1$<salt>$<hash>
+//! ```text
+//! $argon2id$v=19$m=65536,t=2,p=1$<salt>$<hash>
+//! ```
 //!
 //! So when we make the hash slower in a year, old accounts still check
 //! against their old settings, and nobody gets locked out.

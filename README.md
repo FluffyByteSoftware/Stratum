@@ -1,98 +1,72 @@
-# Stratum Core
+# Stratum
 
-Stratum Core is a game server written in Rust.  It is the authority for a small-scale RPG set in a persistent voxel world -- the server decides what is true, and the client (Godot) shows it.
-
-"Core" is the driver.  It starts up, launches everything else the game needs, and gets the world ready for play.  The game content itself will eventually be written in our own scripting language, modeled on LPC, which Core will run.
+Stratum is a game server written in Rust.  It is the authority for a small-scale RPG set in a persistent voxel world -- the server decides what is true, and the client (Godot) shows it.  The game content will eventually be written in our own scripting language, modeled on LPC.
 
 ## State of things
 
-This is a hobby project by one person, and it has just started.  What exists today is the logger, the config file, the thing that writes files to disk, the password hashing and the account file.  That is the whole server right now: it starts, reads its settings, reads the account files to see which names are taken, logs a few lines, saves its settings and shuts down.  Nothing listens on a port yet, and there is no way to make an account yet -- that waits on the admin's menu.  Things will be missing, things will break, and things will change.
-
-## What works
-
-- **Scribe**, the logger.  Anything in the server can call it.  Messages go to the terminal in color and to a log file that starts fresh every day (or sooner, if it gets too big).  Every message carries a priority (Debug, Info, Warn, Error), a channel that says which part of the server it came from, and the file and line number that logged it.
-- **Constellations**, the configuration.  It reads a plain `KEY=VALUE` config file at launch and keeps the settings where anything in the server can get at them.  If there is no file, it writes one with the defaults in it.  A bad value gets a warning in the log and falls back to its default -- it never stops the server.  At shutdown the settings in memory are written back to the file.
-- **DiskMan**, the Disk Manager.  Every file the server replaces goes through it.  It writes a temp file, forces it onto the disk, renames it over the old one, then forces the folder onto the disk too, so neither a crash nor a power cut can leave half a file behind.  Saves that the game can't wait on go into a cache, and a background thread writes them out in batches.  On a spinning disk, 50 saves take about half a second that way, and the game never waits for any of it.
-- **Security**, the passwords.  A new password is hashed with Argon2id and a random salt, and only the hash is kept -- we can check a password and we can never get one back.  The hash is slow on purpose (about 85 ms), which is what makes a stolen account file expensive to crack.  Every login attempt takes the same amount of time whether the name was wrong or the password was, so nobody can tell which from outside.  Making an account uses it.  Nothing makes an account yet.
-- **Accounts.**  One JSON file per account, named after the username: the password hash, an account UUID, the characters on the account, when it was made and last logged in, and (if the player wants to give them) an email address, a real name and a birthday.  Usernames and character names are each unique across the whole server.  The server reads every account file at launch to learn which names are taken, and if it can't read the account folder it refuses to start.  The admin makes the accounts; there is no sign-up.
-
-The first three are standard library only.  Security uses the `argon2` crate, because nobody should write their own password hash, and that includes us.  The account uses `serde` and `serde_json` to read and write JSON.  Those are the project's three dependencies.
+A hobby project by one person, and early days.  What exists is the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts and change settings.  Nothing listens on a port yet, so "Start server" doesn't start anything.  Networking is next.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
-- UDP for game traffic, TCP for authentication.  TLS on the TCP side before a real password ever crosses it.
+- UDP for game traffic, TCP for logins.  TLS on the TCP side before a real password ever crosses it.
 - Built for about 50 players at peak.  This is not an MMO.
 - The world is chunked into zones and generated procedurally.
-- Everything is saved to flat files in the LPC tradition.  No database.
-- Whole files are never written in place.  A crash rolls players back to their last save that made it to the disk.  It never corrupts one.
-- All time is UTC, and any time we display has a Z on the end.
-- As few dependencies as we can get away with.  So far that is three.
+- Flat files in the LPC tradition.  No database.  A crash rolls players back to their last save.  It never corrupts one.
+- All time is UTC.
+- As few dependencies as we can get away with.  So far that is four: `argon2` (nobody should write their own password hash, and that includes us), `serde` and `serde_json` (the account files are JSON), and `rpassword` (keeping a typed password off the screen).
 
-## Building
+## Layout
 
-You need Rust (edition 2024, so 1.85 or newer).  Then:
+A Cargo workspace, with room for three crates:
+
+```
+├── Cargo.toml              The workspace.
+├── stratum-tools/          The tools everything shares: the logger (Scribe),
+│                           the config (Constellations), file writes (DiskMan),
+│                           passwords (Security) and accounts.
+├── stratum-launcher/       The program: starts the tools, runs the admin's menu.
+├── stratum-networking/     The TCP and UDP sides.  Not written yet.
+└── ai/                     The project paperwork (see below).
+```
+
+Probe, a C# console program that pretends to be a game client so the server can be tested without Godot, lives in its own repo.
+
+## Building and running
+
+You need Rust (edition 2024, so 1.85 or newer).  From the repo root:
 
 ```
 cargo run
 cargo test
 ```
 
-`cargo test` runs in under a second.  There are also two benchmarks that don't run with it.  One times 50 saves on whatever drive `/opt/stratum` lives on, and the other times the password hash at a range of settings on your processor:
+Run it from a real terminal (Konsole, or whatever yours is), not an IDE's Run button.  The menu needs a real terminal to hide passwords.
+
+When the menu comes up, a second window opens with the log in it.  The command that opens it is `LOG_WINDOW_COMMAND` in the config file, which starts out as `konsole -e` because that is what the author's machine has.  Change it to your own terminal's "run this command" form (`gnome-terminal --`, `xterm -e`), or leave it empty and run this in another terminal yourself:
 
 ```
-cargo test fifty_saves -- --ignored --nocapture
-cargo test argon2_cost -- --ignored --nocapture
+tail -n +1 -F /opt/stratum/content/logs/latest.log
 ```
 
-Cargo.toml builds the hashing crates optimized even in a debug build.  Without that a debug build hashes twenty times slower than the real thing and the benchmark measures the wrong server.
-
-The server keeps its files under `/opt/stratum/content/` -- logs in `logs/`, the config file in `config/`, accounts in `accounts/` -- and on most Linux machines `/opt` belongs to root.  Either hand the folder to your own user first:
+The server keeps its files under `/opt/stratum/content/` (the `CONTENT_FOLDER` setting), and makes the folders it needs inside it at launch.  On most Linux machines `/opt` belongs to root.  Hand the folder to your own user first:
 
 ```
 sudo mkdir -p /opt/stratum
 sudo chown -R $USER:$USER /opt/stratum
 ```
 
-...or don't, and the server will tell you in red that it can't write there, and carry on with the built-in defaults and the terminal.  The one thing it won't carry on without is the account folder: if that is there and can't be read, the server says so and stops, because it can't tell which names are taken.
+The first run writes a config file to `/opt/stratum/content/config/stratum.conf`.  That path is fixed, even if `CONTENT_FOLDER` points somewhere else, because the config file can't tell us where the config file is.  Its built-in defaults are the author's dev machine for now, so the addresses will want changing.  The server writes the file back out at every shutdown, so edit it while the server is stopped, or pick Reload in the menu before you quit.
 
 Developed on Linux.  Nothing has been tried anywhere else.
 
-## The config file
-
-The first run writes `/opt/stratum/content/config/stratum.conf`, with a comment above every setting.  It looks like this:
-
-```
-MAX_LOG_SIZE_MB=500
-LOG_FOLDER=/opt/stratum/content/logs/
-TCP_HOST_ADDRESS=10.0.0.84
-TCP_PORT=9997
-```
-
-Two things to know.  The built-in defaults are the author's dev machine right now, so the addresses will want changing.  And the server writes the file back out every time it shuts down, so edit it while the server is stopped, and don't get attached to any comments you add.
-
-## Layout
-
-```
-├── Cargo.toml
-├── src/
-│   ├── main.rs             Entry point.  Starts the pieces in order.
-│   ├── scribe.rs           Scribe, the logger.
-│   ├── constellations.rs   Constellations, the configuration.
-│   ├── diskman.rs          DiskMan, the Disk Manager.
-│   ├── security.rs         Security, the password hashing.
-│   └── account.rs          The account file, and the names that are taken.
-└── ai/                     The project paperwork (see below).
-```
-
 ## Documents
 
-The code is written in sessions with an AI assistant (Claude).  The files in `ai/` are what it reads at the start of every session and rewrites at the end, so they are also the most honest record of where the project is.
+The code is written in sessions with an AI assistant (Claude), in a few separate projects.  The files in `ai/` are what it reads at the start of every session and rewrites at the end.
 
-- `STATUS.md` -- where the project is and what happened each session.
-- `TODO.md` -- what we owe and what we'd like to try.
-- `PROJECT_CORE.md` -- the layout of Core, file by file, and the decisions made so far.
-- `PROJECT_CORE_INSTRUCTIONS.md` -- the standing instructions the assistant works from.
-- `WRITINGSTYLE.md` -- how the documents and code comments are supposed to read.
+- `ai/STATUS.md` -- where things are, and what the next session is for.
+- `ai/TODO.md` -- what we owe and what we'd like to try.
+- `ai/WRITINGSTYLE.md` -- how the documents and code comments are supposed to read.
+- `ai/core/` and `ai/networking/` -- each project's layout and its standing instructions.
 
 ## Author
 

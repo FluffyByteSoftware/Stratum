@@ -1,0 +1,15 @@
+# File:     stratum-networking/Cargo.toml
+# Project:  Stratum Networking
+# Author:   Jacob Chacko
+#
+# The part of Stratum that talks to the network.  The TCP side (logins, and
+# chat once a player is in) and the UDP side (game traffic).  A library, and
+# the Launcher starts and stops it.
+
+[package]
+name = "stratum-networking"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+stratum-tools = { path = "../stratum-tools" }
