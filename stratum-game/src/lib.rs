@@ -1,14 +1,16 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! File:     stratum-game/src/lib.rs
+//! Project:  Stratum Game
+//! Author:   Jacob Chacko
+//!
+//! The game.  Everything that lives in the world starts here.  So far that
+//! is the actors (actor.rs), the player file each character is saved in
+//! (player_file.rs), the character names (names.rs), and making and
+//! deleting a character (character.rs).  The world itself comes later.
+//!
+//! main() calls `names::start()` at launch, after `account::start()`, so
+//! the game knows which character names are taken.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod actor;
+pub mod character;
+pub mod names;
+pub mod player_file;

@@ -15,3 +15,4 @@ pub mod constellations;
 pub mod diskman;
 pub mod security;
 pub mod account;
+pub mod fingerprinter;

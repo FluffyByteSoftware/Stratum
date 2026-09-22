@@ -4,7 +4,7 @@ Stratum is a game server written in Rust.  It is the authority for a small-scale
 
 ## State of things
 
-A hobby project by one person, and early days.  What exists is the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts and change settings.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in stays connected, but there is nothing to do yet: no characters to pick, no world, no UDP.  Things will be missing, things will break, and things will change.
+A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in stays connected, but there is nothing to do yet: no picking a character, no world, no UDP.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
@@ -14,11 +14,12 @@ A hobby project by one person, and early days.  What exists is the plumbing: a l
 - The world is chunked into zones and generated procedurally.
 - Flat files in the LPC tradition.  No database.  A crash rolls players back to their last save.  It never corrupts one.
 - All time is UTC.
-- As few dependencies as we can get away with.  So far that is six: `argon2` (nobody should write their own password hash, and that includes us), `serde` and `serde_json` (the account files are JSON), `rpassword` (keeping a typed password off the screen), and `rustls` and `rcgen` (TLS, and making its certificate -- nobody should write their own of those either).
+- Everything that lives in the world is held in an entity component system: an entity is just an id, and the data (a name, a position, health) are components attached to it.  A player's character and an NPC are the same kind of thing with a different component saying who drives it.
+- As few dependencies as we can get away with.  So far that is seven: `argon2` (nobody should write their own password hash, and that includes us), `serde` and `serde_json` (the account and character files are JSON), `rpassword` (keeping a typed password off the screen), `rustls` and `rcgen` (TLS, and making its certificate -- nobody should write their own of those either), and `bevy_ecs` (the entity component system out of the Bevy engine, used on its own).  We measured it first: a pretend game tick with 50 players and 500 NPCs took well under a millisecond.
 
 ## Layout
 
-A Cargo workspace with three crates:
+A Cargo workspace with four crates:
 
 ```
 ├── Cargo.toml              The workspace.
@@ -26,9 +27,13 @@ A Cargo workspace with three crates:
 │                           by byte.
 ├── stratum-tools/          The tools everything shares: the logger (Scribe),
 │                           the config (Constellations), file writes (DiskMan),
-│                           passwords (Security) and accounts.
+│                           passwords (Security), UUIDs (Fingerprinter) and
+│                           accounts.
 ├── stratum-networking/     The TCP side (a listener, TLS and the login, so far)
 │                           and the UDP side (not written yet).
+├── stratum-game/           The game: what lives in the world, the character
+│                           files, and the character names.  The world itself
+│                           comes later.
 └── stratum-launcher/       The program: starts the tools, runs the admin's menu.
 ```
 

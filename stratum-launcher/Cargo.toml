@@ -13,4 +13,5 @@ edition = "2024"
 [dependencies]
 stratum-tools = { path = "../stratum-tools" }
 stratum-networking = { path = "../stratum-networking" }
+stratum-game = { path = "../stratum-game" }
 rpassword = "7.5.4"

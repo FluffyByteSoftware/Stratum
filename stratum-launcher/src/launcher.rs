@@ -26,6 +26,7 @@ use stratum_tools::constellations;
 use stratum_tools::scribe::{self, Channel};
 use stratum_tools::security;
 use stratum_networking;
+use stratum_game::character;
 
 /// Where the server is in its life.  It decides what S says and whether Q is
 /// on the menu.
@@ -231,6 +232,7 @@ fn account_menu() {
         say("  3) List accounts");
         say("  4) Finger account");
         say("  5) Change password");
+        say("  6) Add character to account");
         say("  B) Back");
         say("");
 
@@ -245,6 +247,7 @@ fn account_menu() {
             Some('3') => list_accounts(),
             Some('4') => finger_account(),
             Some('5') => change_password(),
+            Some('6') => add_character(),
             Some('B') => return,
             _ => say("That isn't one of the choices."),
         }
@@ -295,6 +298,34 @@ fn make_account() {
     match account::create_account(&username, &password, &email, &real_name, &birthday) {
         Ok(account) => say(&format!("Account {} made.", account.username)),
         Err(problem) => say(&format!("{}  No account was made.", problem)),
+    }
+}
+
+/// Makes a character on an account.  The name has to follow the game's
+/// rules and be free on the whole server.  A name that isn't says why and
+/// gets asked again, so one typo doesn't mean starting over.  Enter on its
+/// own backs out.
+fn add_character() {
+    let mut account = match ask_for_account() {
+        Some(account) => account,
+        None => return,
+    };
+
+    loop {
+        let typed = match read_line("Character name (Enter to cancel): ") {
+            Some(typed) if !typed.is_empty() => typed,
+            _ => return,
+        };
+
+        match character::create_character(&mut account, &typed) {
+            Ok(_) => {
+                say(&format!("Character {} made.  {} now has {}.",
+                             account::display_name(&typed.to_ascii_lowercase()),
+                             account.username, characters_text(&account)));
+                return;
+            }
+            Err(problem) => say(&problem),
+        }
     }
 }
 
@@ -402,8 +433,8 @@ fn finger_account() {
         say("  Characters:   none");
     } else {
         say("  Characters:");
-        for pawn in &account.characters {
-            say(&format!("    {:<12}  {}", account::display_name(&pawn.name), pawn.uuid));
+        for character in &account.characters {
+            say(&format!("    {:<12}  {}", account::display_name(&character.name), character.uuid));
         }
     }
 }
@@ -455,7 +486,7 @@ fn characters_text(account: &Account) -> String {
         return "no characters".to_string();
     }
     let names: Vec<String> = account.characters.iter()
-        .map(|pawn| account::display_name(&pawn.name))
+        .map(|character| account::display_name(&character.name))
         .collect();
     format!("{} character(s): {}", names.len(), names.join(", "))
 }

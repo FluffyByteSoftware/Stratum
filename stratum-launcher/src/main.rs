@@ -4,7 +4,8 @@
 //!
 //! Entry point.  Core is the driver: it starts up, brings the other pieces
 //! online in order, and gets the game ready for play.  Right now the pieces
-//! are Scribe, Constellations, Security, Launcher, Account, and DiskMan.
+//! are Scribe, Constellations, Security, Launcher, Account, DiskMan, and
+//! the game's character names.
 
 // Rust note: `mod launcher;` tells the compiler that src/launcher.rs is part
 // of this program.  The tools aren't named here any more -- they are their
@@ -39,8 +40,8 @@ fn main() {
                                          settings.tcp_host_address, settings.tcp_port));
 
 
-    // Which usernames and character names are already taken.  If the account
-    // folder can't be read we can't tell, and nothing after this is safe.
+    // Which usernames are already taken.  If the account folder can't be
+    // read we can't tell, and nothing after this is safe.
     if !account::start() {
         scribe::error(Channel::Core, "Can't go on without the account folder.  \
         Shutting down.");
@@ -49,6 +50,10 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Then which character names are, which the game learns from the
+    // accounts.  So it has to come after them.
+    stratum_game::names::start();
+    
     // the admin's menu. It runs until they pick Q, and then we shut down.
     launcher::run();
     

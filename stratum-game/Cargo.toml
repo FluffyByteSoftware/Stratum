@@ -1,6 +1,18 @@
+# File:     stratum-game/Cargo.toml
+# Project:  Stratum Game
+# Author:   Jacob Chacko
+#
+# The game, as a library.  What lives in the world: the pawns, the player
+# files and the character names.  The world itself comes later.
+
 [package]
 name = "stratum-game"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+stratum-tools = { path = "../stratum-tools" }
+
+bevy_ecs = "0.19.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

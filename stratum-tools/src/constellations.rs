@@ -73,6 +73,7 @@ fn config_path() -> PathBuf {
 const LOG_SUBFOLDER: &str = "logs";
 const ACCOUNT_SUBFOLDER: &str = "accounts";
 const SSL_SUBFOLDER: &str = "saved/ssl";
+const PLAYER_SUBFOLDER: &str = "saved/players";
 
 // ---------------------------------------------------------------------------
 // The settings
@@ -318,6 +319,15 @@ pub fn ssl_folder() -> PathBuf {
     get().content_folder.join(SSL_SUBFOLDER)
 }
 
+
+/// Where the player files live, inside the content folder.  One folder in
+/// here per account, named after the username, and one file in that per
+/// character.  The account folders get made by DiskMan the first time one
+/// of their characters is saved, so only this one gets made at launch.
+pub fn player_folder() -> PathBuf {
+    get().content_folder.join(PLAYER_SUBFOLDER)
+}
+
 /// Makes every folder the content folder is supposed to have, if it isn't
 /// there already.  main() calls this once, after load().
 ///
@@ -325,7 +335,7 @@ pub fn ssl_folder() -> PathBuf {
 /// Error in the log (DiskMan says why), and whoever needs it finds out for
 /// themselves -- the account folder stops the launch in account::start().
 pub fn make_folders() {
-    for folder in [log_folder(), account_folder(), ssl_folder()] {
+    for folder in [log_folder(), account_folder(), ssl_folder(), player_folder()] {
         // Rust note: `let _ =` throws the result away on purpose.  DiskMan
         // has already logged anything that went wrong.
         let _ = diskman::make_folder(&folder);
