@@ -3,8 +3,8 @@
 //! Author:   Jacob Chacko
 //!
 //! The TCP side.  It listens, gives each connection a thread of its own,
-//! and runs the TLS handshake on it.  Then it hangs up, because there is no
-//! protocol yet to say what comes next.
+//! runs the TLS handshake on it, and then the login.  A player who gets in
+//! keeps the connection for as long as they are on.
 //!
 //! The listener is one thread that sits inside accept() and wakes up once
 //! per connection.  Stopping it is the one awkward part: accept() blocks
@@ -15,36 +15,61 @@
 //! wakes up often enough to notice the deadline and the stop flag.  TLS
 //! doesn't mind being woken up in the middle of a handshake.  We measured
 //! 10,000 of those timeouts across 50 connections without one failure.
+//!
+//! The login goes in the order docs/PROTOCOL.md gives: we say Hello, the
+//! client says the secret word, we say we are waiting, the client sends a
+//! username and password, and we answer.  Anything else, in any other
+//! order, is a failure.  Every failure gets the same answer, closes the
+//! connection, and makes that address wait FAILURE_HOLD before its next
+//! try.
+//!
+//! The login happens here, on the connection's own thread.  It touches the
+//! account files and nothing in the game, so the rule about never touching
+//! game state still holds.
 
-use std::io;
+use std::collections::HashMap;
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use rustls::{ServerConfig, ServerConnection};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
-use stratum_tools::constellations;
 use stratum_tools::scribe::{self, Channel};
+use stratum_tools::{account, constellations, security};
 
+use crate::protocol::{self, Packet, PacketType};
 use crate::tls;
 
 /// The most connections open at once.  50 players, plus room for a rush of
 /// reconnects after a restart.  A guess.
 const MAX_CONNECTIONS: usize = 100;
 
-/// How long a new connection gets to finish TLS (and, once there is one, to
-/// log in).  Without it somebody could open 100 connections and sit there.
-/// A guess.
+/// How long a new connection gets to finish TLS and log in.  Without it
+/// somebody could open 100 connections and sit there.  A guess.
 const LOGIN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long a connection thread waits on a read before it looks around.
 /// Measured against 100 ms in Session 9, and kept.
 const READ_WAIT: Duration = Duration::from_millis(50);
 
+/// How long a write can take before we give up on the client.  A client
+/// that stops reading would otherwise hold its thread forever once the
+/// socket's buffer fills up.  A guess.
+const WRITE_WAIT: Duration = Duration::from_secs(5);
+
 /// How long stop() waits for the connection threads to notice.
 const STOP_WAIT: Duration = Duration::from_secs(2);
+
+/// How long an address waits after a failed login before it gets to try
+/// again, counted from the failure.
+const FAILURE_HOLD: Duration = Duration::from_secs(2);
+
+/// How much we ask TLS for in one read.  Bigger than any packet we take,
+/// so one read can hold a whole one.
+const READ_CHUNK: usize = 8192;
 
 /// The running TCP side.  Held in TCP below while the server is started.
 struct TcpSide {
@@ -61,6 +86,30 @@ struct TcpSide {
 // Rust note: the same shape Constellations uses for its global.  `None`
 // means the TCP side isn't running.
 static TCP: Mutex<Option<TcpSide>> = Mutex::new(None);
+
+/// When each address last failed a login.  Only the ones inside
+/// FAILURE_HOLD matter, and the rest get cleared out as new failures come
+/// in.
+// Rust note: a HashMap can't be built before the program starts the way a
+// Mutex around a `None` can.  LazyLock builds it the first time anybody
+// touches it.
+static RECENT_FAILURES: LazyLock<Mutex<HashMap<IpAddr, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The TLS connection once the handshake is done.  It reads and writes
+/// like a socket, and does the encrypting and decrypting on the way.
+type TlsStream = StreamOwned<ServerConnection, TcpStream>;
+
+/// Where a connection has got to in the login.
+#[derive(Clone, Copy, PartialEq)]
+enum Stage {
+    /// We said Hello and are waiting for the secret word.
+    SecretWord,
+    /// We said we are waiting, for the username and password.
+    Credentials,
+    /// In.  Only the packets a logged-in player can send are taken.
+    LoggedIn,
+}
 
 /// Loads the TLS certificate and key, binds the address and port from the
 /// config file, and starts the listener thread.  An `Err` says what went
@@ -219,13 +268,24 @@ impl Drop for OpenConnection {
     }
 }
 
-/// One connection's thread.  Runs the TLS handshake, then hangs up.
+/// One connection's thread, from the first byte to the last.  Waits out
+/// the hold if this address failed recently, runs the TLS handshake, then
+/// hands over to converse() for the login and whatever comes after it.
 fn connection(mut socket: TcpStream, peer: SocketAddr, tls: Arc<ServerConfig>, stopping: Arc<AtomicBool>) {
+    // The hold comes before TLS, so an address that keeps getting it wrong
+    // costs us a sleeping thread and no crypto.
+    if !wait_out_hold(peer, &stopping) {
+        return;
+    }
+
+    // The deadline starts after the hold, so the hold doesn't eat into it.
     let started = Instant::now();
 
-    if let Err(error) = socket.set_read_timeout(Some(READ_WAIT)) {
+    let timeouts = socket.set_read_timeout(Some(READ_WAIT))
+        .and_then(|_| socket.set_write_timeout(Some(WRITE_WAIT)));
+    if let Err(error) = timeouts {
         scribe::warn(Channel::NetTcp,
-                     &format!("Couldn't set a read timeout for {}: {}.  Closing it.", peer, error));
+                     &format!("Couldn't set timeouts for {}: {}.  Closing it.", peer, error));
         return;
     }
     // Small messages go out straight away, instead of being held back to
@@ -267,16 +327,281 @@ fn connection(mut socket: TcpStream, peer: SocketAddr, tls: Arc<ServerConfig>, s
     scribe::info(Channel::NetTcp,
                  &format!("TLS with {} is up, in {} ms.", peer, started.elapsed().as_millis()));
 
-    // TODO(protocol): the read-wait loop goes here.  Read for READ_WAIT,
-    // hand anything up to the game loop, send anything it queued, round
-    // again.  Until there is a protocol, we say goodbye properly and close.
-    session.send_close_notify();
-    while session.wants_write() {
-        if session.write_tls(&mut socket).is_err() {
+    let mut stream = StreamOwned::new(session, socket);
+    converse(&mut stream, peer, started, &stopping);
+    goodbye(&mut stream);
+}
+
+/// Everything after TLS: the login, then the logged-in player's packets,
+/// until one side hangs up or the server stops.
+fn converse(stream: &mut TlsStream, peer: SocketAddr, started: Instant, stopping: &AtomicBool) {
+    if send(stream, &protocol::hello()).is_err() {
+        return;
+    }
+
+    let mut stage = Stage::SecretWord;
+    // Bytes that have arrived and aren't a whole packet yet.
+    let mut incoming: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; READ_CHUNK];
+
+    loop {
+        if stopping.load(Ordering::SeqCst) {
+            return;
+        }
+        if stage != Stage::LoggedIn && started.elapsed() >= LOGIN_DEADLINE {
+            scribe::info(Channel::NetTcp,
+                         &format!("{} didn't log in within {} seconds.  Closing it.",
+                                  peer, LOGIN_DEADLINE.as_secs()));
+            refuse(stream, peer);
+            return;
+        }
+
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                scribe::info(Channel::NetTcp, &format!("{} hung up.", peer));
+                return;
+            }
+            Ok(count) => incoming.extend_from_slice(&chunk[..count]),
+            // TODO(game-loop): once there is a game loop, this is where
+            // anything it queued for this player gets sent.
+            Err(error) if timed_out(&error) => continue,
+            Err(error) => {
+                scribe::info(Channel::NetTcp, &format!("Lost {}: {}.", peer, error));
+                return;
+            }
+        }
+
+        // One read can hold part of a packet, or several.  Take out every
+        // whole one, and leave the part for the next read to finish.
+        loop {
+            let packet = match protocol::take_packet(&mut incoming) {
+                Ok(Some(packet)) => packet,
+                Ok(None) => break,
+                Err(problem) => {
+                    scribe::info(Channel::NetTcp,
+                                 &format!("{} sent {}.  Closing it.", peer, problem));
+                    if stage != Stage::LoggedIn {
+                        refuse(stream, peer);
+                    }
+                    return;
+                }
+            };
+            match handle(stream, peer, stage, &packet) {
+                Some(next) => stage = next,
+                None => return,
+            }
+        }
+    }
+}
+
+/// Deals with one whole packet.  Hands back the stage to carry on in, or
+/// `None` when the connection should close.
+fn handle(stream: &mut TlsStream, peer: SocketAddr, stage: Stage, packet: &Packet) -> Option<Stage> {
+    match (stage, PacketType::from_byte(packet.kind)) {
+        (Stage::SecretWord, Some(PacketType::SecretWord)) => {
+            match protocol::read_one_string(&packet.payload) {
+                Ok(word) if word == protocol::SECRET_WORD => {
+                    if send(stream, &protocol::awaiting_authentication()).is_err() {
+                        return None;
+                    }
+                    Some(Stage::Credentials)
+                }
+                // What they sent instead isn't logged.  It could be anything.
+                _ => {
+                    scribe::info(Channel::NetTcp, &format!("{} didn't know the secret word.", peer));
+                    refuse(stream, peer);
+                    None
+                }
+            }
+        }
+
+        (Stage::Credentials, Some(PacketType::AuthenticationRequest)) => {
+            // The clock starts the moment the attempt is in, and every path
+            // below runs out the same floor before anything goes back.
+            let arrived = Instant::now();
+            let request = protocol::read_authentication_request(&packet.payload);
+            let logged_in = match &request {
+                Ok((username, password)) => log_in(username, password),
+                Err(_) => false,
+            };
+            security::pad_login_time(arrived);
+
+            match (&request, logged_in) {
+                (Ok((username, _)), true) => {
+                    scribe::info(Channel::Security,
+                                 &format!("{} logged in as {}.", peer, name_for_log(username)));
+                }
+                (Ok((username, _)), false) => {
+                    scribe::info(Channel::Security,
+                                 &format!("Login from {} as {} failed.", peer, name_for_log(username)));
+                }
+                (Err(problem), _) => {
+                    scribe::info(Channel::Security,
+                                 &format!("{} sent a login we couldn't read: {}.", peer, problem));
+                }
+            }
+
+            if !logged_in {
+                refuse(stream, peer);
+                return None;
+            }
+            if send(stream, &protocol::authentication_result(true, protocol::SUCCESS_MESSAGE)).is_err() {
+                return None;
+            }
+            Some(Stage::LoggedIn)
+        }
+
+        (Stage::LoggedIn, Some(PacketType::SimpleTcpMesg)) => {
+            match protocol::read_one_string(&packet.payload) {
+                Ok(text) => {
+                    // Rust note: `{:?}` prints the string in quotes, with any
+                    // newline written as \n, so one message stays one log
+                    // line whatever is in it.
+                    scribe::info(Channel::NetTcp,
+                                 &format!("{} sent {:?}.  Sending it back.", peer, text));
+                    if send(stream, &protocol::simple_message(&text)).is_err() {
+                        return None;
+                    }
+                    Some(Stage::LoggedIn)
+                }
+                Err(problem) => {
+                    scribe::info(Channel::NetTcp,
+                                 &format!("{} sent a SimpleTcpMesg with {}.  Closing it.", peer, problem));
+                    None
+                }
+            }
+        }
+
+        // Somebody who is in can send a packet from a later group before we
+        // know what to do with it.  That is our shortcoming, not theirs.
+        (Stage::LoggedIn, _) => {
+            scribe::info(Channel::NetTcp,
+                         &format!("{} sent packet type 0x{:02X}, which we don't handle yet.  Ignored it.",
+                                  peer, packet.kind));
+            Some(Stage::LoggedIn)
+        }
+
+        // Anything else during the login is out of turn.
+        (_, _) => {
+            scribe::info(Channel::NetTcp,
+                         &format!("{} sent packet type 0x{:02X} out of turn.", peer, packet.kind));
+            refuse(stream, peer);
+            None
+        }
+    }
+}
+
+/// Tries a username and password against the account files.  True if they
+/// are right.  It doesn't pad the time -- the caller does that, on every
+/// path, this one included.
+fn log_in(username: &str, password: &str) -> bool {
+    let mut account = match account::load_account(username) {
+        Ok(Some(account)) => account,
+        // No such account, a name that isn't allowed, or a damaged file.
+        // All three are a plain failure, and none of them costs a hash.
+        Ok(None) | Err(_) => return false,
+    };
+
+    if !security::verify_password(password, &account.password_hash_string) {
+        return false;
+    }
+
+    // The password was right.  A login time we couldn't save isn't worth
+    // turning the player away over.
+    if let Err(error) = account::record_login(&mut account) {
+        scribe::warn(Channel::Security,
+                     &format!("Couldn't save the login time for {}: {}.  Letting them in anyway.",
+                              account.username, error));
+    }
+    true
+}
+
+/// A username the way it goes in the log.  Only a name that follows the
+/// username rules gets written down.  Anything else could be somebody's
+/// password typed into the wrong box -- a password needs a symbol, and a
+/// username can't have one -- or junk meant to mess up the log.
+fn name_for_log(username: &str) -> String {
+    match account::check_username(username) {
+        Ok(name) => name,
+        Err(_) => "a name that isn't allowed".to_string(),
+    }
+}
+
+/// Sends the one failure answer and puts the address on hold.  Every way
+/// out of a failed login comes through here.
+fn refuse(stream: &mut TlsStream, peer: SocketAddr) {
+    record_failure(peer.ip());
+    let _ = send(stream, &protocol::authentication_result(false, protocol::FAILURE_MESSAGE));
+}
+
+/// Sends one packet's bytes and pushes them out onto the wire.
+fn send(stream: &mut TlsStream, bytes: &[u8]) -> io::Result<()> {
+    stream.write_all(bytes)?;
+    stream.flush()
+}
+
+/// Says goodbye properly (TLS's `close_notify`), so the client knows we
+/// closed on purpose and nothing was cut off.  The socket itself closes
+/// when the stream goes away, straight after.
+fn goodbye(stream: &mut TlsStream) {
+    stream.conn.send_close_notify();
+    while stream.conn.wants_write() {
+        if stream.conn.write_tls(&mut stream.sock).is_err() {
             break;
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The hold
+// ---------------------------------------------------------------------------
+
+/// Notes that an address just failed a login.
+fn record_failure(address: IpAddr) {
+    let mut failures = RECENT_FAILURES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Anything older than the hold is no use any more.  Clearing it out here
+    // keeps the list from growing for as long as the server runs.
+    failures.retain(|_, failed_at| failed_at.elapsed() < FAILURE_HOLD);
+    failures.insert(address, Instant::now());
+}
+
+/// How much longer an address has to wait, or `None` if it doesn't.
+fn hold_remaining(address: IpAddr) -> Option<Duration> {
+    let failures = RECENT_FAILURES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let failed_at = failures.get(&address)?;
+    // Rust note: `checked_sub` is `None` when the hold is already over,
+    // instead of going below zero.
+    FAILURE_HOLD.checked_sub(failed_at.elapsed())
+}
+
+/// Sleeps until the address's hold is over, READ_WAIT at a time so a stop
+/// isn't kept waiting.  False if the server stopped first.
+fn wait_out_hold(peer: SocketAddr, stopping: &AtomicBool) -> bool {
+    let Some(wait) = hold_remaining(peer.ip()) else {
+        return true;
+    };
+    scribe::info(Channel::NetTcp,
+                 &format!("{} failed a login less than {} seconds ago.  Holding it for {} ms.",
+                          peer, FAILURE_HOLD.as_secs(), wait.as_millis()));
+
+    let until = Instant::now() + wait;
+    loop {
+        if stopping.load(Ordering::SeqCst) {
+            return false;
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        thread::sleep(left.min(READ_WAIT));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Small pieces
+// ---------------------------------------------------------------------------
 
 /// A read that gave up after READ_WAIT.  Linux calls it WouldBlock, and
 /// some other systems call it TimedOut.

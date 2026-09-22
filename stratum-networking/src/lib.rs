@@ -13,6 +13,7 @@
 
 pub mod tcp;
 mod tls;
+mod protocol;
 
 /// Starts everything that listens.  An `Err` says, in words, what couldn't
 /// be started, and nothing is left running.
