@@ -287,6 +287,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-game"
+version = "0.1.0"
+
+[[package]]
 name = "rustls"
 version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
