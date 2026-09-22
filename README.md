@@ -4,11 +4,12 @@ Stratum is a game server written in Rust.  It is the authority for a small-scale
 
 ## State of things
 
-A hobby project by one person, and early days.  What exists is the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts and change settings.  Nothing listens on a port yet, so "Start server" doesn't start anything.  Networking is next.  Things will be missing, things will break, and things will change.
+A hobby project by one person, and early days.  What exists is the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts and change settings.  "Start server" opens a TCP port, and every connection gets logged and hung up on.  That is the whole of the networking so far: no protocol, no TLS, no login.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
-- UDP for game traffic, TCP for logins.  TLS on the TCP side before a real password ever crosses it.
+- UDP for game traffic, TCP for logins.  TLS on the TCP side before a real password ever crosses it.  The TCP connection stays open afterwards for chat, and as the fallback.
+- Plain threads, not async.  One thread per connection.  We measured 50 of them against a pretend game loop, and the game loop didn't notice.
 - Built for about 50 players at peak.  This is not an MMO.
 - The world is chunked into zones and generated procedurally.
 - Flat files in the LPC tradition.  No database.  A crash rolls players back to their last save.  It never corrupts one.
@@ -17,16 +18,16 @@ A hobby project by one person, and early days.  What exists is the plumbing: a l
 
 ## Layout
 
-A Cargo workspace, with room for three crates:
+A Cargo workspace with three crates:
 
 ```
 ├── Cargo.toml              The workspace.
 ├── stratum-tools/          The tools everything shares: the logger (Scribe),
 │                           the config (Constellations), file writes (DiskMan),
 │                           passwords (Security) and accounts.
-├── stratum-launcher/       The program: starts the tools, runs the admin's menu.
-├── stratum-networking/     The TCP and UDP sides.  Not written yet.
-└── ai/                     The project paperwork (see below).
+├── stratum-networking/     The TCP side (a listener, so far) and the UDP side
+│                           (not written yet).
+└── stratum-launcher/       The program: starts the tools, runs the admin's menu.
 ```
 
 Probe, a C# console program that pretends to be a game client so the server can be tested without Godot, lives in its own repo.
@@ -55,18 +56,9 @@ sudo mkdir -p /opt/stratum
 sudo chown -R $USER:$USER /opt/stratum
 ```
 
-The first run writes a config file to `/opt/stratum/content/config/stratum.conf`.  That path is fixed, even if `CONTENT_FOLDER` points somewhere else, because the config file can't tell us where the config file is.  Its built-in defaults are the author's dev machine for now, so the addresses will want changing.  The server writes the file back out at every shutdown, so edit it while the server is stopped, or pick Reload in the menu before you quit.
+The first run writes a config file to `/opt/stratum/content/config/stratum.conf`.  That path is fixed, even if `CONTENT_FOLDER` points somewhere else, because the config file can't tell us where the config file is.  Its built-in defaults are the author's dev machine for now, so the addresses will want changing: `TCP_HOST_ADDRESS` and `TCP_PORT` are what "Start server" listens on.  The server writes the file back out at every shutdown, so edit it while the server is stopped, or pick Reload in the menu before you quit.
 
 Developed on Linux.  Nothing has been tried anywhere else.
-
-## Documents
-
-The code is written in sessions with an AI assistant (Claude), in a few separate projects.  The files in `ai/` are what it reads at the start of every session and rewrites at the end.
-
-- `ai/STATUS.md` -- where things are, and what the next session is for.
-- `ai/TODO.md` -- what we owe and what we'd like to try.
-- `ai/WRITINGSTYLE.md` -- how the documents and code comments are supposed to read.
-- `ai/core/` and `ai/networking/` -- each project's layout and its standing instructions.
 
 ## Author
 

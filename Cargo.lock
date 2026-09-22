@@ -240,6 +240,7 @@ name = "stratum-launcher"
 version = "0.1.0"
 dependencies = [
  "rpassword",
+ "stratum-networking",
  "stratum-tools",
 ]
 

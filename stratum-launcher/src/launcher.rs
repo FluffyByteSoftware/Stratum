@@ -23,6 +23,7 @@ use stratum_tools::account::{self, Account};
 use stratum_tools::constellations;
 use stratum_tools::scribe::{self, Channel};
 use stratum_tools::security;
+use stratum_networking;
 
 /// Where the server is in its life.  It decides what S says and whether Q is
 /// on the menu.
@@ -67,9 +68,11 @@ pub fn run() {
                 state = ServerState::Stopped;
             }
             (Some('S'), _) => {
-                start_server();
-                state = ServerState::Running;
+                if  start_server() {
+                    state = ServerState::Running;
+                }
             }
+            
             (Some('W'), _) => account_menu(),
             (Some('C'), _) => config_menu(),
             (Some('Q'), ServerState::Running) => {
@@ -115,14 +118,26 @@ fn state_text(state: ServerState) -> &'static str {
     }
 }
 
-// TODO(networking): starting and stopping the server is only a log line
-// until there is a TCP and a UDP side to start.
-fn start_server() {
-    scribe::info(Channel::Core, "Server started.  (Nothing to start yet -- there is no networking.)");
-    say("Server started.");
+/// Starts networking.  True when it is running.  A refusal comes with its
+/// reason in words, and the admin sees it in the menu.
+fn start_server() -> bool {
+    match stratum_networking::start() {
+        Ok(()) => {
+            scribe::info(Channel::Core, "Server started.");
+            say("Server started.");
+            true
+        }
+        Err(reason) => {
+            let text = format!("The server didn't start.  {}", reason);
+            scribe::error(Channel::Core, &text);
+            say(&text);
+            false
+        }
+    }
 }
 
 fn stop_server() {
+    stratum_networking::stop();
     scribe::info(Channel::Core, "Server stopped.");
     say("Server stopped.");
 }
