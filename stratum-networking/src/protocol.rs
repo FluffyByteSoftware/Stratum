@@ -17,6 +17,13 @@
 //! long stream of bytes with no gaps in it, so without the length the
 //! reader couldn't tell where one packet stops and the next one starts.
 //!
+//! UDP is different.  It keeps every packet whole and apart from the next,
+//! so a UDP packet carries no length, just the type and the payload:
+//!
+//! ```text
+//! [type: u8][payload]
+//! ```
+//!
 //! Numbers are little-endian (lowest byte first), because that is what C#'s
 //! BinaryWriter and BinaryReader do, and both clients are C#.  A string is a
 //! u32 byte count and then that many bytes of UTF-8.
@@ -30,6 +37,13 @@ use crate::CharacterSummary;
 /// character list, and it stops somebody claiming a 4 GB packet and making
 /// us wait for it.
 pub const MAX_PACKET_BYTES: usize = 4096;
+
+/// The biggest UDP packet we take.  Anything much over 1200 bytes risks
+/// getting split up somewhere along the internet, and a lost piece loses
+/// the whole packet.  So we keep ours under it, and refuse one that isn't.
+// TODO(udp): udp.rs is the first thing to use this, and everything else
+// that is only for UDP in here.  Until then the compiler warns about each.
+pub const MAX_UDP_BYTES: usize = 1200;
 
 /// What a client has to say before it gets to try a password.  Not real
 /// security -- anybody with a copy of the client has it.  It turns away
@@ -58,9 +72,33 @@ pub const ALREADY_LOGGED_IN_MESSAGE: &str = "This account is already logged in."
 pub const CHARACTER_DONE: u8 = 0;
 pub const CHARACTER_REFUSED: u8 = 1;
 
+/// How long a login token is: 32 random bytes, written as 64 hex
+/// characters.  A Connect whose token isn't this long is junk.
+pub const TOKEN_LENGTH: usize = 64;
+
+/// What a ConnectResult says to the player.  A bad token gets the same
+/// FAILURE_MESSAGE as a bad login.
+pub const CONNECTED_MESSAGE: &str = "Welcome to the world.";
+pub const OUTDATED_MESSAGE: &str = "Outdated Client Failure";
+
+/// The server's answer to a Connect, which is the first byte of a
+/// ConnectResult.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConnectAnswer {
+    /// The version is on the list and the token is good.  The player is in.
+    Accepted = 0,
+    /// The token isn't one we handed out, or it's already in use.
+    Refused = 1,
+    /// The client's version isn't on the list in
+    /// expected_client_version.txt.  Checked before the token.
+    Outdated = 2,
+}
+
 /// Every packet type there is so far.  The high four bits say the group and
 /// the low four say which one inside it.  0x1_ is Login, 0x2_ is
-/// CharacterSelect, and Game (0x3_) comes later.  0xF_ is for testing.
+/// CharacterSelect, and 0x3_ is Game, which goes over UDP.  0xF_ is for
+/// testing.
 // Rust note: `repr(u8)` stores the enum as one byte, and `as u8` turns a
 // value back into its number, the same as a C# `enum : byte`.
 #[repr(u8)]
@@ -105,6 +143,13 @@ pub enum PacketType {
     /// Client to server. No payload. "Send me my character list again."
     /// The server answers with a CharacterList.
     RequestCharacterList = 0x26,
+    /// Client to server, over UDP.  Two strings: the client's version, then
+    /// the login token from the WorldTicket.  The first UDP packet a client
+    /// sends, and it sends it again every half second until it hears back.
+    Connect = 0x30,
+    /// Server to client, over UDP.  A ConnectAnswer byte, then a string for
+    /// the player.
+    ConnectResult = 0x31,
     /// Either way, once logged in.  One string.  The server sends it
     /// straight back, which is how we test that both directions work.
     SimpleTcpMesg = 0xF0,
@@ -129,6 +174,8 @@ impl PacketType {
             0x24 => Some(PacketType::CharacterResult),
             0x25 => Some(PacketType::WorldTicket),
             0x26 => Some(PacketType::RequestCharacterList),
+            0x30 => Some(PacketType::Connect),
+            0x31 => Some(PacketType::ConnectResult),
             0xF0 => Some(PacketType::SimpleTcpMesg),
             _ => None,
         }
@@ -195,6 +242,19 @@ pub fn take_packet(buffer: &mut Vec<u8>) -> Result<Option<Packet>, String> {
     // slides whatever is left down to the start.
     buffer.drain(..4 + length);
     Ok(Some(Packet { kind, payload }))
+}
+
+/// Splits a UDP packet into its type and payload.  An `Err` means the packet
+/// is empty or too big, and gets dropped without an answer.
+pub fn take_datagram(bytes: &[u8]) -> Result<Packet, String> {
+    if bytes.is_empty() {
+        return Err("an empty UDP packet".to_string());
+    }
+    if bytes.len() > MAX_UDP_BYTES {
+        return Err(format!("a UDP packet of {} bytes, and the most we take is {}",
+                           bytes.len(), MAX_UDP_BYTES));
+    }
+    Ok(Packet { kind: bytes[0], payload: bytes[1..].to_vec() })
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +368,21 @@ pub fn simple_message(text: &str) -> Vec<u8> {
     frame(PacketType::SimpleTcpMesg, &payload)
 }
 
+/// The answer to a Connect, as a UDP packet (no length in front).  Always
+/// smaller than any Connect we answer, since those carry a whole token.
+/// That way somebody who fakes the sender's address can't use us to flood
+/// a stranger with more bytes than they sent.
+pub fn connect_result(answer: ConnectAnswer) -> Vec<u8> {
+    let message = match answer {
+        ConnectAnswer::Accepted => CONNECTED_MESSAGE,
+        ConnectAnswer::Refused => FAILURE_MESSAGE,
+        ConnectAnswer::Outdated => OUTDATED_MESSAGE,
+    };
+    let mut bytes = vec![PacketType::ConnectResult as u8, answer as u8];
+    put_string(&mut bytes, message);
+    bytes
+}
+
 // ---------------------------------------------------------------------------
 // The packets the server reads
 // ---------------------------------------------------------------------------
@@ -330,6 +405,21 @@ pub fn read_authentication_request(payload: &[u8]) -> Result<(String, String), S
     let password = take_string(payload, &mut at)?;
     finished(payload, at)?;
     Ok((username, password))
+}
+
+/// The payload of a Connect: the client's version, then the login token.
+/// A token that isn't TOKEN_LENGTH long is refused here, so a Connect too
+/// small to be real never gets an answer (see connect_result()).
+pub fn read_connect(payload: &[u8]) -> Result<(String, String), String> {
+    let mut at = 0;
+    let version = take_string(payload, &mut at)?;
+    let token = take_string(payload, &mut at)?;
+    finished(payload, at)?;
+    if token.len() != TOKEN_LENGTH {
+        return Err(format!("a token of {} bytes, and it should be {}",
+                           token.len(), TOKEN_LENGTH));
+    }
+    Ok((version, token))
 }
 
 /// The payload of a SessionChoice: exactly one byte, 0 or 1.
@@ -414,6 +504,48 @@ mod tests {
         // 9998 is 0x270E, so the port goes out as 0E 27.
         assert_eq!(world_ticket("ab", 9998),
                    vec![9, 0, 0, 0, 0x25, 2, 0, 0, 0, b'a', b'b', 0x0E, 0x27]);
+    }
+
+    #[test]
+    fn a_connect_result_in_bytes() {
+        // No length in front, because it goes over UDP.  The type, the
+        // answer, then "Outdated Client Failure", which is 23 bytes.
+        let mut expected = vec![0x31, 2, 23, 0, 0, 0];
+        expected.extend_from_slice(b"Outdated Client Failure");
+        assert_eq!(connect_result(ConnectAnswer::Outdated), expected);
+
+        assert_eq!(connect_result(ConnectAnswer::Accepted)[1], 0);
+        assert_eq!(connect_result(ConnectAnswer::Refused)[1], 1);
+    }
+
+    #[test]
+    fn a_connect_reads_back() {
+        let token = "0123456789abcdef".repeat(4);
+        let payload = request("0.0.1", &token);
+        assert_eq!(read_connect(&payload), Ok(("0.0.1".to_string(), token)));
+    }
+
+    #[test]
+    fn a_connect_without_a_real_token_is_refused() {
+        assert!(read_connect(&request("0.0.1", "")).is_err());
+        assert!(read_connect(&request("0.0.1", &"a".repeat(63))).is_err());
+        assert!(read_connect(&request("0.0.1", &"a".repeat(65))).is_err());
+
+        // Every Connect we answer is bigger than every answer we send.
+        let smallest = 1 + request("", &"a".repeat(TOKEN_LENGTH)).len();
+        for answer in [ConnectAnswer::Accepted, ConnectAnswer::Refused, ConnectAnswer::Outdated] {
+            assert!(connect_result(answer).len() < smallest);
+        }
+    }
+
+    #[test]
+    fn udp_packets_have_no_length() {
+        let packet = take_datagram(&[0x30, 7, 8]).unwrap();
+        assert_eq!(packet, Packet { kind: 0x30, payload: vec![7, 8] });
+
+        assert!(take_datagram(&[]).is_err());
+        assert!(take_datagram(&vec![0x30; MAX_UDP_BYTES]).is_ok());
+        assert!(take_datagram(&vec![0x30; MAX_UDP_BYTES + 1]).is_err());
     }
 
     #[test]
@@ -521,6 +653,8 @@ mod tests {
             PacketType::CharacterResult,
             PacketType::WorldTicket,
             PacketType::RequestCharacterList,
+            PacketType::Connect,
+            PacketType::ConnectResult,
             PacketType::SimpleTcpMesg];
         for kind in every {
             assert_eq!(PacketType::from_byte(kind as u8), Some(kind));
@@ -528,5 +662,6 @@ mod tests {
         assert_eq!(PacketType::from_byte(0x00), None);
         assert_eq!(PacketType::from_byte(0x17), None);
         assert_eq!(PacketType::from_byte(0x27), None);
+        assert_eq!(PacketType::from_byte(0x32), None);
     }
 }

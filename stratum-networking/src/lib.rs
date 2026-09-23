@@ -22,6 +22,7 @@ pub mod tcp;
 mod tls;
 mod protocol;
 mod sessions;
+mod client_version;
 
 /// The game's character functions, handed in by the Launcher so this crate
 /// can call them without knowing where they live.  Each `Err` is a message
@@ -63,9 +64,9 @@ pub struct CharacterSummary {
     pub z: f32,
 }
 
-/// Starts everything that listens.  An `Err` says, in words, what couldn't
-/// be started, and nothing is left running.
 pub fn start(calls: CharacterCalls) -> Result<(), String> {
+    // The client list first, so a bad one stops us before anything listens.
+    client_version::check()?;
     tcp::start(calls)
     // TODO(udp): the UDP side starts here too, once it exists.
 }

@@ -1,0 +1,13 @@
+# File:     expected_client_version.txt
+# Project:  Stratum Networking
+# Author:   Jacob Chacko
+#
+# The client versions this server lets in, one a line.  A client whose
+# version isn't on the list gets "Outdated Client Failure" and goes no
+# further.  Keep an old version here for a while after a new client comes
+# out, and take it off when it's time for everybody to update.
+#
+# This gets built into the server, so a change here needs a rebuild.
+# Lines starting with # and blank lines are skipped.
+
+0.0.1
