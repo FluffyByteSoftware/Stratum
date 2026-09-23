@@ -23,6 +23,7 @@ mod tls;
 mod protocol;
 mod sessions;
 mod client_version;
+pub mod udp;
 
 /// The game's character functions, handed in by the Launcher so this crate
 /// can call them without knowing where they live.  Each `Err` is a message
@@ -67,12 +68,18 @@ pub struct CharacterSummary {
 pub fn start(calls: CharacterCalls) -> Result<(), String> {
     // The client list first, so a bad one stops us before anything listens.
     client_version::check()?;
-    tcp::start(calls)
-    // TODO(udp): the UDP side starts here too, once it exists.
+    tcp::start(calls)?;
+    // If UDP won't start, TCP comes back down, so nothing is left running.
+    if let Err(error) = udp::start() {
+        tcp::stop();
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Stops everything that listens, and waits until it has.  Safe to call
 /// when nothing was started.
 pub fn stop() {
+    udp::stop();
     tcp::stop();
 }

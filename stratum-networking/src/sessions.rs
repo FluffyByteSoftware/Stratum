@@ -9,8 +9,13 @@
 //! wanted to play).
 //!
 //! The entry is also where an account's login token lives, once the player
-//! has picked a character.  The UDP side will look tokens up here.  In
-//! memory only: a restart forgets every one of them, on purpose.
+//! has picked a character, and where its UDP packets come from once the
+//! token has been used.  udp.rs looks tokens up here.  In memory only: a
+//! restart forgets every one of them, on purpose.
+//!
+//! A token connects once.  After that the UDP side knows the player by
+//! their address, and when it lets them go (they went quiet, or logged
+//! out) the token goes with it.
 //!
 //! A connection holds its entry as a `Claim`.  When the connection ends,
 //! the claim goes away and takes the entry with it, whichever way the
@@ -24,6 +29,7 @@
 //! to them, so the tests can run them without touching the real list.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -37,9 +43,10 @@ struct Session {
     kicked: Arc<AtomicBool>,
     /// The login token and the character it is for, once one is picked.
     /// A new one replaces the old.
-    // TODO(udp): udp.rs looks a token up here when a client first knocks.
-    // Until then nothing reads it.
     ticket: Option<(String, String)>,
+    /// Where the player's UDP packets come from, once the token has
+    /// connected.  `None` until then.
+    udp: Option<SocketAddr>,
 }
 
 /// Every logged-in account, by username.
@@ -110,11 +117,40 @@ pub fn issue_token(claim: &Claim, character: &str) -> Result<String, String> {
     match sessions.get_mut(&claim.username) {
         Some(session) if session.id == claim.id => {
             session.ticket = Some((token.clone(), character.to_string()));
+            session.udp = None;
             Ok(token)
         }
         // Somebody logged this session out between the pick and now.
         _ => Err("the account was taken over from somewhere else".to_string()),
     }
+}
+
+/// Connects a player over UDP with the token from their WorldTicket.  Hands
+/// back the account and the character, or `None` if nobody was handed that
+/// token, or it has already connected from a different address.  A repeat
+/// from the same address is fine: that is a client whose answer got lost,
+/// asking again.
+pub fn connect_udp(token: &str, from: SocketAddr) -> Option<(String, String)> {
+    let mut sessions = SESSIONS.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    connect_udp_in(&mut sessions, token, from)
+}
+
+/// Where an account's UDP packets come from.  `None` if the account isn't
+/// on, or hasn't connected over UDP.  udp.rs asks this to find out whether
+/// the TCP side still has the player.
+pub fn udp_address(username: &str) -> Option<SocketAddr> {
+    let sessions = SESSIONS.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    sessions.get(username).and_then(|session| session.udp)
+}
+
+/// Ends an account's UDP session and spends its token, so the token can't
+/// connect again.  Only if it is still connected from this address.
+pub fn end_udp(username: &str, from: SocketAddr) {
+    let mut sessions = SESSIONS.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    end_udp_in(&mut sessions, username, from);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +175,39 @@ fn take_over_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64
 /// Puts a fresh entry in, replacing any old one, token and all.
 fn insert_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64) -> Arc<AtomicBool> {
     let kicked = Arc::new(AtomicBool::new(false));
-    sessions.insert(username.to_string(), Session { id, kicked: Arc::clone(&kicked), ticket: None });
+    sessions.insert(username.to_string(), Session { id, kicked: Arc::clone(&kicked), ticket: None, udp: None });
     kicked
+}
+
+/// Finds the session holding this token.  50 players at most, so looking
+/// at each one is fine.
+fn connect_udp_in(sessions: &mut HashMap<String, Session>,
+                  token: &str,
+                  from: SocketAddr) -> Option<(String, String)> {
+    for (username, session) in sessions.iter_mut() {
+        let Some((ticket_token, character)) = &session.ticket else {
+            continue;
+        };
+        if ticket_token != token {
+            continue;
+        }
+        match session.udp {
+            None => session.udp = Some(from),
+            Some(address) if address == from => {}
+            Some(_) => return None,
+        }
+        return Some((username.clone(), character.clone()));
+    }
+    None
+}
+
+fn end_udp_in(sessions: &mut HashMap<String, Session>, username: &str, from: SocketAddr) {
+    if let Some(session) = sessions.get_mut(username) {
+        if session.udp == Some(from) {
+            session.udp = None;
+            session.ticket = None;
+        }
+    }
 }
 
 /// Takes an account off the list, but only if the entry is still the one
@@ -199,5 +266,53 @@ mod tests {
         release_in(&mut sessions, "jacob", 2);
         assert!(sessions.is_empty());
         assert!(claim_in(&mut sessions, "jacob", 3).is_some());
+    }
+
+    /// An account with a token for Aldric, the way issue_token() leaves it.
+    fn with_ticket(token: &str) -> HashMap<String, Session> {
+        let mut sessions = HashMap::new();
+        claim_in(&mut sessions, "jacob", 1).unwrap();
+        sessions.get_mut("jacob").unwrap().ticket = Some((token.to_string(), "aldric".to_string()));
+        sessions
+    }
+
+    #[test]
+    fn a_token_connects_from_one_address() {
+        let mut sessions = with_ticket("abc");
+        let home: SocketAddr = "10.0.0.5:50000".parse().unwrap();
+        let elsewhere: SocketAddr = "10.0.0.6:50000".parse().unwrap();
+        let expected = Some(("jacob".to_string(), "aldric".to_string()));
+
+        assert_eq!(connect_udp_in(&mut sessions, "abc", home), expected);
+        // The answer got lost and the client asked again.
+        assert_eq!(connect_udp_in(&mut sessions, "abc", home), expected);
+        // Somebody else with a copy of the token.
+        assert_eq!(connect_udp_in(&mut sessions, "abc", elsewhere), None);
+    }
+
+    #[test]
+    fn a_token_nobody_was_handed_is_refused() {
+        let mut sessions = with_ticket("abc");
+        let home: SocketAddr = "10.0.0.5:50000".parse().unwrap();
+
+        assert_eq!(connect_udp_in(&mut sessions, "abd", home), None);
+        assert_eq!(connect_udp_in(&mut sessions, "", home), None);
+    }
+
+    #[test]
+    fn a_token_is_spent_when_its_udp_session_ends() {
+        let mut sessions = with_ticket("abc");
+        let home: SocketAddr = "10.0.0.5:50000".parse().unwrap();
+        let elsewhere: SocketAddr = "10.0.0.6:50000".parse().unwrap();
+        connect_udp_in(&mut sessions, "abc", home).unwrap();
+
+        // Ending it from the wrong address does nothing.
+        end_udp_in(&mut sessions, "jacob", elsewhere);
+        assert_eq!(sessions["jacob"].udp, Some(home));
+
+        end_udp_in(&mut sessions, "jacob", home);
+        assert_eq!(connect_udp_in(&mut sessions, "abc", home), None);
+        // The account itself is still on, back in character select.
+        assert_eq!(sessions.len(), 1);
     }
 }
