@@ -8,6 +8,12 @@
 //! alone (so a shared account doesn't kick your brother off because you
 //! wanted to play).
 //!
+//! It is also where the server's player limit lives: MAX_LOGGED_IN
+//! accounts on at once, counting everybody past the password, in character
+//! select or in the world.  The next one gets told the server is full.
+//! Taking over your own session doesn't count, because it doesn't add
+//! anybody.
+//!
 //! The entry is also where an account's login token lives, once the player
 //! has picked a character, and where its UDP packets come from once the
 //! token has been used.  udp.rs looks tokens up here.  In memory only: a
@@ -49,6 +55,21 @@ struct Session {
     udp: Option<SocketAddr>,
 }
 
+/// The most accounts logged in at once.  Jacob's number, for now.  The TCP
+/// side's MAX_CONNECTIONS is a little higher, so a full server still has
+/// room to tell the next player so.
+pub const MAX_LOGGED_IN: usize = 1;
+
+/// Why claim() said no.
+#[derive(Debug, PartialEq)]
+pub enum Refused {
+    /// The account is logged in somewhere else.  The player gets asked
+    /// what to do.
+    AlreadyOn,
+    /// MAX_LOGGED_IN accounts are on already.
+    Full,
+}
+
 /// Every logged-in account, by username.
 // Rust note: the same LazyLock shape as the failure list in tcp.rs.  A
 // HashMap can't be built before the program starts, so it gets built the
@@ -86,24 +107,27 @@ impl Drop for Claim {
     }
 }
 
-/// Logs an account in, if it isn't on already.  `None` means it is, and
-/// the player gets asked what to do.
-pub fn claim(username: &str) -> Option<Claim> {
+/// Logs an account in, if it isn't on already and there is room.  An
+/// account that is already on gets `AlreadyOn` even on a full server, so
+/// its player can still take their own session over.
+pub fn claim(username: &str) -> Result<Claim, Refused> {
     let mut sessions = SESSIONS.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     let kicked = claim_in(&mut sessions, username, id)?;
-    Some(Claim { username: username.to_string(), id, kicked })
+    Ok(Claim { username: username.to_string(), id, kicked })
 }
 
 /// Logs an account in whether it is on or not.  If it is, the other
-/// session is told to go, and its token goes with it.
-pub fn take_over(username: &str) -> Claim {
+/// session is told to go, and its token goes with it.  `None` only if the
+/// other session left on its own while the player was choosing, and the
+/// server filled up in the meantime.
+pub fn take_over(username: &str) -> Option<Claim> {
     let mut sessions = SESSIONS.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    let kicked = take_over_in(&mut sessions, username, id);
-    Claim { username: username.to_string(), id, kicked }
+    let kicked = take_over_in(&mut sessions, username, id)?;
+    Some(Claim { username: username.to_string(), id, kicked })
 }
 
 /// Makes a login token for a claim's account and the character the player
@@ -157,19 +181,30 @@ pub fn end_udp(username: &str, from: SocketAddr) {
 // The work, on whatever map is handed in
 // ---------------------------------------------------------------------------
 
-/// Each of these hands back the new entry's `kicked` flag.
-fn claim_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64) -> Option<Arc<AtomicBool>> {
+/// Each of these hands back the new entry's `kicked` flag.  Already on is
+/// checked before full, on purpose (see claim()).
+fn claim_in(sessions: &mut HashMap<String, Session>,
+            username: &str,
+            id: u64) -> Result<Arc<AtomicBool>, Refused> {
     if sessions.contains_key(username) {
-        return None;
+        return Err(Refused::AlreadyOn);
     }
-    Some(insert_in(sessions, username, id))
+    if sessions.len() >= MAX_LOGGED_IN {
+        return Err(Refused::Full);
+    }
+    Ok(insert_in(sessions, username, id))
 }
 
-fn take_over_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64) -> Arc<AtomicBool> {
-    if let Some(old) = sessions.get(username) {
-        old.kicked.store(true, Ordering::SeqCst);
+fn take_over_in(sessions: &mut HashMap<String, Session>,
+                username: &str,
+                id: u64) -> Option<Arc<AtomicBool>> {
+    match sessions.get(username) {
+        Some(old) => old.kicked.store(true, Ordering::SeqCst),
+        // Nobody to take over, so this adds somebody, and needs room.
+        None if sessions.len() >= MAX_LOGGED_IN => return None,
+        None => {}
     }
-    insert_in(sessions, username, id)
+    Some(insert_in(sessions, username, id))
 }
 
 /// Puts a fresh entry in, replacing any old one, token and all.
@@ -179,8 +214,8 @@ fn insert_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64) -
     kicked
 }
 
-/// Finds the session holding this token.  50 players at most, so looking
-/// at each one is fine.
+/// Finds the session holding this token.  MAX_LOGGED_IN players at most,
+/// so looking at each one is fine.
 fn connect_udp_in(sessions: &mut HashMap<String, Session>,
                   token: &str,
                   from: SocketAddr) -> Option<(String, String)> {
@@ -234,9 +269,9 @@ mod tests {
     fn an_account_is_only_on_once() {
         let mut sessions = HashMap::new();
 
-        assert!(claim_in(&mut sessions, "jacob", 1).is_some());
-        assert!(claim_in(&mut sessions, "jacob", 2).is_none());
-        assert!(claim_in(&mut sessions, "brother", 3).is_some());
+        assert!(claim_in(&mut sessions, "jacob", 1).is_ok());
+        assert_eq!(claim_in(&mut sessions, "jacob", 2).err(), Some(Refused::AlreadyOn));
+        assert!(claim_in(&mut sessions, "brother", 3).is_ok());
         assert_eq!(sessions.len(), 2);
     }
 
@@ -245,7 +280,7 @@ mod tests {
         let mut sessions = HashMap::new();
 
         let old_kicked = claim_in(&mut sessions, "jacob", 1).unwrap();
-        let new_kicked = take_over_in(&mut sessions, "jacob", 2);
+        let new_kicked = take_over_in(&mut sessions, "jacob", 2).unwrap();
 
         assert!(old_kicked.load(Ordering::SeqCst));
         assert!(!new_kicked.load(Ordering::SeqCst));
@@ -257,7 +292,7 @@ mod tests {
         let mut sessions = HashMap::new();
 
         claim_in(&mut sessions, "jacob", 1).unwrap();
-        take_over_in(&mut sessions, "jacob", 2);
+        take_over_in(&mut sessions, "jacob", 2).unwrap();
 
         // The kicked connection notices and goes, after the new one is in.
         release_in(&mut sessions, "jacob", 1);
@@ -265,7 +300,45 @@ mod tests {
 
         release_in(&mut sessions, "jacob", 2);
         assert!(sessions.is_empty());
-        assert!(claim_in(&mut sessions, "jacob", 3).is_some());
+        assert!(claim_in(&mut sessions, "jacob", 3).is_ok());
+    }
+
+    /// A server with MAX_LOGGED_IN players on, called player0, player1 and
+    /// so on.
+    fn full() -> HashMap<String, Session> {
+        let mut sessions = HashMap::new();
+        for number in 0..MAX_LOGGED_IN {
+            claim_in(&mut sessions, &format!("player{}", number), number as u64).unwrap();
+        }
+        sessions
+    }
+
+    #[test]
+    fn a_full_server_turns_the_next_one_away() {
+        let mut sessions = full();
+
+        assert_eq!(claim_in(&mut sessions, "jacob", 100).err(), Some(Refused::Full));
+        assert_eq!(sessions.len(), MAX_LOGGED_IN);
+
+        // Somebody leaves, and there is room again.
+        release_in(&mut sessions, "player0", 0);
+        assert!(claim_in(&mut sessions, "jacob", 101).is_ok());
+    }
+
+    #[test]
+    fn on_a_full_server_you_can_still_take_over_your_own_session() {
+        let mut sessions = full();
+
+        // Already on comes first, so the player gets asked, not turned away.
+        assert_eq!(claim_in(&mut sessions, "player7", 100).err(), Some(Refused::AlreadyOn));
+        assert!(take_over_in(&mut sessions, "player7", 101).is_some());
+        assert_eq!(sessions.len(), MAX_LOGGED_IN);
+
+        // But if their old session left while they were choosing, and
+        // somebody else filled its place, there is nothing to take over.
+        release_in(&mut sessions, "player8", 8);
+        claim_in(&mut sessions, "jacob", 102).unwrap();
+        assert!(take_over_in(&mut sessions, "player8", 103).is_none());
     }
 
     /// An account with a token for Aldric, the way issue_token() leaves it.

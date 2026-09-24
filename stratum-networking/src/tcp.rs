@@ -24,6 +24,7 @@
 //! connection, and makes that address wait FAILURE_HOLD before its next
 //! try.
 //!
+//! A right password for an account that is already on gets asked what to
 //! do instead: log the other session out, or hang up.  sessions.rs keeps
 //! the list of who is on.  A right password on a full server gets told so
 //! and hung up on, with no hold, because it isn't a failed login.
@@ -59,12 +60,13 @@ use crate::protocol::{self, Choice, Packet, PacketType};
 use crate::sessions::{self, Claim, Refused};
 use crate::tls;
 
-/// The most connections open at once.  50 players, plus room for a rush of
-/// reconnects after a restart.  A guess.
+/// The most connections open at once.  Jacob's number: room for
+/// sessions::MAX_LOGGED_IN players, and a few more, so a full server can
+/// still answer the next player and tell them so.
 const MAX_CONNECTIONS: usize = 55;
 
 /// How long a new connection gets to finish TLS and log in.  Without it
-/// somebody could open 100 connections and sit there.  A guess.
+/// somebody could open every connection we take and sit there.  A guess.
 const LOGIN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long a player gets to answer "this account is already logged in".
@@ -750,10 +752,8 @@ fn welcome(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup) -> bo
 /// password typed into the wrong box -- a password needs a symbol, and a
 /// username can't have one -- or junk meant to mess up the log.
 fn name_for_log(username: &str) -> String {
-    match account::check_username(username) {
-        Ok(name) => name,
-        Err(_) => "a name that isn't allowed".to_string(),
-    }
+    account::check_username(username).
+        unwrap_or_else(|_| "a name that isn't allowed".to_string())
 }
 
 /// Sends the one failure answer and puts the address on hold.  Every way
