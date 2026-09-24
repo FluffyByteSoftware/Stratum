@@ -83,7 +83,7 @@ pub fn run() {
 
             (Some('L'), _) => view_log(),
             (Some('W'), _) => account_menu(),
-            (Some('C'), _) => config_menu(),
+            (Some('C'), _) => config_menu(state == ServerState::Running),
             (Some('Q'), ServerState::Running) => {
                 say("Stop the server first.  Q only works while it isn't running.");
             }
@@ -539,7 +539,7 @@ fn or_not_given(value: &str) -> &str {
 // C) Config management
 // ---------------------------------------------------------------------------
 
-fn config_menu() {
+fn config_menu(running: bool) {
     loop {
         say("");
         say("Config management");
@@ -562,7 +562,7 @@ fn config_menu() {
                 let _ = write!(io::stdout(), "{}", constellations::settings_text());
             }
             Some('2') => change_setting(),
-            Some('3') => reload_settings(),
+            Some('3') => reload_settings(running),
             Some('B') => return,
             _ => say("That isn't one of the choices."),
         }
@@ -577,16 +577,36 @@ fn change_setting() {
 
     match constellations::set(&line) {
         Ok(()) => {
-            say("Changed.  It is saved to the file when the server shuts down.");
+            if constellations::will_save() {
+                say("Changed.  It is saved to the file when the server shuts down.");
+            } else {
+                say("Changed, for this run only.  The config file couldn't be read, so \
+                nothing gets saved to it at shutdown.");
+            }
             settings_changed();
         }
         Err(problem) => say(&format!("{}  Nothing changed.", problem)),
     }
 }
 
-fn reload_settings() {
-    constellations::load();
-    say("Reloaded.  Anything wrong with the file is in the log.");
+/// Reads the config file again, and shows its complaints here in the menu.
+/// Scribe's terminal is quiet while it reads, so that while the server is
+/// stopped they don't show twice (once as log lines, once here).  Then it
+/// goes back to how it was: quiet while the server runs, not while it
+/// doesn't.
+fn reload_settings(running: bool) {
+    scribe::quiet_terminal(true);
+    let complaints = constellations::load();
+    scribe::quiet_terminal(running);
+
+    if complaints.is_empty() {
+        say("Reloaded.  No complaints.");
+    } else {
+        say("Reloaded, with these complaints (they are in the log too):");
+        for complaint in &complaints {
+            say(&format!("  {}", complaint));
+        }
+    }
     settings_changed();
 }
 

@@ -32,6 +32,9 @@
 //! While the server runs, the Launcher's config menu can show the settings,
 //! change one (`set()`), or read the file again (`load()` a second time).
 //! CONTENT_FOLDER is the one setting that can't change on a running server.
+//! load() hands its complaints back as well as logging them, because while
+//! the server runs nothing reaches the terminal, and the admin who picked
+//! Reload would otherwise never see them.
 //!
 //! Constellations also knows the content folder's layout: which folders go
 //! inside it, what they are called, and how to make them if they are
@@ -40,6 +43,7 @@
 //! Adding a setting means touching four places, all of them in this file: the
 //! Settings struct, default_settings(), apply_setting() and file_text().
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -74,6 +78,7 @@ const LOG_SUBFOLDER: &str = "logs";
 const ACCOUNT_SUBFOLDER: &str = "accounts";
 const SSL_SUBFOLDER: &str = "saved/ssl";
 const PLAYER_SUBFOLDER: &str = "saved/players";
+const ORPHANED_PLAYER_SUBFOLDER: &str = "saved/orphaned/players";
 
 // ---------------------------------------------------------------------------
 // The settings
@@ -165,10 +170,15 @@ static CONSTELLATIONS: Mutex<Option<Constellations>> = Mutex::new(None);
 /// including anything `set()` changed since.  The Launcher's Reload does
 /// that, so a hand edit to the file can be picked up without a restart.
 /// Everything but CONTENT_FOLDER, which stays what it was at launch.
-pub fn load() {
+///
+/// Every complaint it logs also comes back in the list, one line each, for
+/// the Launcher's Reload to show in the menu.  An empty list means the file
+/// read clean.  main() has the terminal at launch and doesn't need them.
+pub fn load() -> Vec<String> {
     let path = config_path();
     let mut settings = default_settings();
     let mut file_unreadable = false;
+    let mut complaints = Vec::new();
 
     // Whatever content folder this run started with, if it has started.
     let running_folder = {
@@ -184,6 +194,7 @@ pub fn load() {
                 scribe::warn(Channel::Core,
                              &format!("{}, {}", path.display(), problem));
             }
+            complaints.extend(problems);
             scribe::info(
                 Channel::Core,
                 &format!("Constellations loaded {}", path.display()),
@@ -198,11 +209,10 @@ pub fn load() {
                 // Somebody's settings are in there.  DiskMan has already
                 // said why, so all we add is what happens next.
                 file_unreadable = true;
-                scribe::error(
-                    Channel::Core,
-                    "Constellations couldn't read the config file.  \
-                    Running on the built-in defaults.",
-                );
+                let complaint = "Constellations couldn't read the config file.  \
+                Running on the built-in defaults.";
+                scribe::error(Channel::Core, complaint);
+                complaints.push(complaint.to_string());
             }
         }
     }
@@ -216,10 +226,11 @@ pub fn load() {
     // there is nothing to warn about.)
     if let Some(running_folder) = running_folder {
         if running_folder != settings.content_folder && !file_unreadable {
-            scribe::warn(Channel::Core,
-                         &format!("CONTENT_FOLDER is {} in the file now, but it only changes at \
-                         launch.  This run keeps {}.", settings.content_folder.display(),
-                                  running_folder.display()));
+            let complaint = format!("CONTENT_FOLDER is {} in the file now, but it only changes at \
+            launch.  This run keeps {}.", settings.content_folder.display(),
+                                    running_folder.display());
+            scribe::warn(Channel::Core, &complaint);
+            complaints.push(complaint);
         }
         settings.content_folder = running_folder;
     }
@@ -236,6 +247,7 @@ pub fn load() {
         file_unreadable,
         next_content_folder,
     });
+    complaints
 }
 
 /// Hands back a copy of the settings.  It is a copy so that nobody sits on
@@ -299,6 +311,19 @@ fn set_in(settings: &mut Settings, line: &str) -> Result<(), String> {
     apply_setting(settings, &key, value.trim())
 }
 
+/// False when save() isn't going to write the config file at shutdown,
+/// because the file couldn't be read, at launch or at the last Reload.
+/// Then anything changed with set() only lasts until the server stops, and
+/// the Launcher says so when the admin changes something.
+pub fn will_save() -> bool {
+    let guard = CONSTELLATIONS.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_ref() {
+        Some(constellations) => !constellations.file_unreadable,
+        None => false,
+    }
+}
+
 /// Where Scribe keeps its log files.  Inside the content folder.
 pub fn log_folder() -> PathBuf {
     get().content_folder.join(LOG_SUBFOLDER)
@@ -328,17 +353,35 @@ pub fn player_folder() -> PathBuf {
     get().content_folder.join(PLAYER_SUBFOLDER)
 }
 
+/// Where a deleted account's player files go, inside the content folder,
+/// each one renamed to its character's UUID.  Deleting an account never
+/// destroys a character, and the admin can put one back by hand.  Jacob's
+/// call.  Moving them here is the game's job (TODO(delete-account)).
+pub fn orphaned_player_folder() -> PathBuf {
+    get().content_folder.join(ORPHANED_PLAYER_SUBFOLDER)
+}
+
 /// Makes every folder the content folder is supposed to have, if it isn't
-/// there already.  main() calls this once, after load().
+/// there already, and clears out any `.tmp` files a crash left behind in
+/// them.  main() calls this once, after load(), before anything can save.
+/// saved/ssl/ is private: only our own user can open it.
 ///
 /// Nothing in here stops the server.  A folder that can't be made is an
 /// Error in the log (DiskMan says why), and whoever needs it finds out for
 /// themselves -- the account folder stops the launch in account::start().
 pub fn make_folders() {
-    for folder in [log_folder(), account_folder(), ssl_folder(), player_folder()] {
-        // Rust note: `let _ =` throws the result away on purpose.  DiskMan
-        // has already logged anything that went wrong.
-        let _ = diskman::make_folder(&folder);
+    // Rust note: `let _ =` throws the result away on purpose.  DiskMan has
+    // already logged anything that went wrong.
+    let _ = diskman::make_folder(&log_folder());
+    let _ = diskman::make_folder(&account_folder());
+    let _ = diskman::make_private_folder(&ssl_folder());
+    let _ = diskman::make_folder(&player_folder());
+    let _ = diskman::make_folder(&orphaned_player_folder());
+
+    // Not the log folder.  Scribe is already running by now, and it makes
+    // its latest.log link under a temp name of its own.
+    for folder in [account_folder(), ssl_folder(), player_folder(), orphaned_player_folder()] {
+        diskman::clear_leftovers(&folder);
     }
 }
 
@@ -437,10 +480,14 @@ pub fn save() {
 /// The rules: blank lines and lines starting with # are skipped.  Everything
 /// else is KEY=VALUE, split at the first `=`.  Spaces around the key and the
 /// value are thrown away, and the key can be in any case.  If a key shows up
-/// twice, the later one wins.
+/// twice, the later one wins, and it gets a complaint of its own, so a
+/// forgotten line higher up the file doesn't go unnoticed.  A line that was
+/// ignored doesn't count as the first time.
 fn parse_text(text: &str, settings: &mut Settings) -> Vec<String> {
     let mut problems = Vec::new();
     let mut line_number = 0;
+    // The line each key was last set on.
+    let mut set_on: HashMap<String, usize> = HashMap::new();
 
     for raw_line in text.lines() {
         line_number += 1;
@@ -467,7 +514,13 @@ fn parse_text(text: &str, settings: &mut Settings) -> Vec<String> {
         let value = value.trim();
 
         match apply_setting(settings, &key, value) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some(earlier) = set_on.get(&key) {
+                    problems.push(format!("line {}: {} was already set on line {}.  This one wins.",
+                                          line_number, key, earlier));
+                }
+                set_on.insert(key, line_number);
+            }
             Err(problem) => {
                 problems.push(format!("line {}: {}  Ignored.", line_number, problem));
             }
@@ -620,12 +673,12 @@ fn file_text(settings:&Settings) -> String {
     text.push_str("# back to the built-in default, and the server log says so.\n");
     text.push_str("\n");
     text.push_str("# The folder the server keeps everything in: logs/, accounts/, \
-    saved/ssl/\n");
-    text.push_str("# and saved/players/.  Missing folders get made at launch.  This one \
-    only\n");
-    text.push_str("# changes at launch, and it doesn't move this file, which always lives \
-    in\n");
-    text.push_str("# /opt/stratum/content/config/.\n");
+    saved/ssl/,\n");
+    text.push_str("# saved/players/ and saved/orphaned/players/.  Missing folders get \
+    made at\n");
+    text.push_str("# launch.  This one only changes at launch, and it doesn't move this \
+    file,\n");
+    text.push_str("# which always lives in /opt/stratum/content/config/.\n");
     
     text.push_str(&format!("CONTENT_FOLDER={}\n", settings.content_folder.display()));
     text.push_str("\n");
@@ -809,8 +862,18 @@ mod tests {
         let mut settings = default_settings();
         let problems = parse_text("TCP_PORT=1\nTCP_PORT=2\n", &mut settings);
 
-        assert!(problems.is_empty());
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("line 2:"));
         assert_eq!(settings.tcp_port, 2);
+
+        // A bad line first was ignored, so the good one after it is the
+        // first time the key was set, and only the bad one gets a complaint.
+        let mut settings = default_settings();
+        let problems = parse_text("TCP_PORT=0\nTCP_PORT=5\n", &mut settings);
+
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("line 1:"));
+        assert_eq!(settings.tcp_port, 5);
     }
 
     #[test]

@@ -95,6 +95,23 @@ pub enum ConnectAnswer {
     Outdated = 2,
 }
 
+/// Why the server is hanging up on a player, which is the whole payload of
+/// a VerbalKick.  A number, not a sentence, so the client can act on it
+/// (a "notify an admin" screen, say) without having to match our wording.
+/// Only the reasons the server sends are in here; docs/PROTOCOL.md has the
+/// whole numbering, with 0 for a reason the client doesn't know and 1
+/// reserved for the UDP side letting a player go.
+// Rust note: `repr(u32)` stores this as four bytes, the same as a C#
+// `enum : uint`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KickReason {
+    /// The character's player file is missing or damaged.  The player can
+    /// see it in the list but can't play it, and an admin has to look.
+    CorruptPlayerFile = 2,
+    
+}
+
 /// Every packet type there is so far.  The high four bits say the group and
 /// the low four say which one inside it.  0x1_ is Login, 0x2_ is
 /// CharacterSelect, and 0x3_ is Game, which goes over UDP.  0xF_ is for
@@ -123,6 +140,8 @@ pub enum PacketType {
     /// Server to client, on the connection that just got logged out from
     /// somewhere else.  No payload, and the server closes it straight after.
     LoggedOutElsewhere = 0x16,
+    /// Server to client.  You've been kicked + int reason code.
+    VerbalKick = 0x17,
     /// Server to client.  A byte for how many slots the account has, a byte
     /// for how many characters are in them, then each character: its short
     /// name, its long name, a byte saying whether it can be played, and
@@ -167,6 +186,7 @@ impl PacketType {
             0x14 => Some(PacketType::AuthenticationResult),
             0x15 => Some(PacketType::SessionChoice),
             0x16 => Some(PacketType::LoggedOutElsewhere),
+            0x17 => Some(PacketType::VerbalKick),
             0x20 => Some(PacketType::CharacterList),
             0x21 => Some(PacketType::CreateCharacter),
             0x22 => Some(PacketType::DeleteCharacter),
@@ -331,6 +351,13 @@ pub fn server_full() -> Vec<u8> {
 
 pub fn logged_out_elsewhere() -> Vec<u8> {
     frame(PacketType::LoggedOutElsewhere, &[])
+}
+
+/// The server is hanging up on the player, and this says why.  Sent just
+/// before the connection closes, so the client can show the player
+/// something better than "the server went away".
+pub fn verbal_kick(reason: KickReason) -> Vec<u8> {
+    frame(PacketType::VerbalKick, &(reason as u32).to_le_bytes())
 }
 
 /// The characters on an account, in the order they were made.  Each one is
@@ -663,6 +690,7 @@ mod tests {
             PacketType::AuthenticationResult,
             PacketType::SessionChoice,
             PacketType::LoggedOutElsewhere,
+            PacketType::VerbalKick,
             PacketType::CharacterList,
             PacketType::CreateCharacter,
             PacketType::DeleteCharacter,
@@ -677,8 +705,16 @@ mod tests {
             assert_eq!(PacketType::from_byte(kind as u8), Some(kind));
         }
         assert_eq!(PacketType::from_byte(0x00), None);
-        assert_eq!(PacketType::from_byte(0x17), None);
+        assert_eq!(PacketType::from_byte(0x18), None);
         assert_eq!(PacketType::from_byte(0x27), None);
         assert_eq!(PacketType::from_byte(0x32), None);
     }
+
+    #[test]
+    fn a_verbal_kick_in_bytes() {
+        // The same bytes docs/PROTOCOL.md will show.  The length is 5: the
+        // type, then the reason as four bytes, lowest first.
+        assert_eq!(verbal_kick(KickReason::CorruptPlayerFile), vec![5, 0, 0, 0, 0x17, 2, 0, 0, 0]);
+    }
+
 }

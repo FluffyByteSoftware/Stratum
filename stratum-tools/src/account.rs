@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::diskman::{self, StratumFile};
-use crate::fingerprinter::new_uuid;
+use crate::fingerprinter::{looks_like_uuid, new_uuid};
 use crate::scribe::{self, Channel};
 use crate::security;
 use crate::constellations;
@@ -352,9 +352,13 @@ pub fn load_account(username: &str) -> Result<Option<Account>, String> {
     match account_from_text(&text, &username) {
         Ok(account) => Ok(Some(account)),
         Err(problem) => {
+            // In capitals, so the admin can't miss it in the log.  The path
+            // and the username stay as they are, because a path cares about
+            // case and a grep for the name should still find it.
             scribe::error(Channel::Security,
-                          &format!("The account file for {} is damaged: {}",
-                                   username, problem));
+                          &format!("DAMAGED ACCOUNT FILE, FIX IT BY HAND: {}.  \
+                          NOBODY CAN LOG IN AS {} UNTIL IT IS FIXED.  What's wrong: {}.",
+                                   account_path(&username).display(), username, problem));
             Err(format!("The account file for {} is damaged.", username))
         }
     }
@@ -652,8 +656,21 @@ fn account_from_text(text: &str, username: &str) -> Result<Account, String> {
         }
     };
 
-    if account.username != username {
+        if account.username != username {
         return Err(format!("it says it belongs to {}", account.username));
+    }
+
+    // A UUID that isn't the shape we write means somebody edited the file by
+    // hand, or it got damaged.  The bad value doesn't go in the message, for
+    // the same reason serde_json's own message doesn't above.
+    if !looks_like_uuid(&account.account_uid) {
+        return Err("its account_uid isn't one of our UUIDs".to_string());
+    }
+    for character in &account.characters {
+        if !looks_like_uuid(&character.uuid) {
+            return Err(format!("the UUID of its character {} isn't one of ours",
+                               display_name(&character.name)));
+        }
     }
 
     Ok(account)
@@ -791,6 +808,20 @@ mod tests {
     fn file_under_the_wrong_name_is_refused() {
         let text = account_to_text(&sample_account()).unwrap();
         assert!(account_from_text(&text, "someoneelse").is_err());
+    }
+
+    #[test]
+    fn a_file_with_a_bad_uuid_is_refused() {
+        let mut account = sample_account();
+        account.account_uid = "not-a-uuid".to_string();
+        let text = account_to_text(&account).unwrap();
+        assert!(account_from_text(&text, "jacob").is_err());
+
+        // Uppercase, which we never write.
+        let mut account = sample_account();
+        account.characters[1].uuid = "3F2A91C0-E4B7-4D1A-9C0E-2B7F5A6D8E10".to_string();
+        let text = account_to_text(&account).unwrap();
+        assert!(account_from_text(&text, "jacob").is_err());
     }
 
     #[test]

@@ -32,8 +32,9 @@ fn main() {
     constellations::load();
     initialize_scribe();
 
-    // The folders inside the content folder: logs, accounts, saved/ssl and
-    // saved/players.  Any that are missing get made now.
+    // The folders inside the content folder: logs, accounts, saved/ssl (which
+    // only our user can open), saved/players and saved/orphaned/players.  Any
+    // that are missing get made now, and any .tmp a crash left in them goes.
     constellations::make_folders();
 
     // Then Security's hashing worker, before anything can hash a password.

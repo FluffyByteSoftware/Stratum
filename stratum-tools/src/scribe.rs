@@ -4,9 +4,10 @@
 //!
 //! Scribe is the logger.  Anything in the server can call it, and every
 //! message goes to a log file.  Warn and Error go to the terminal too, in
-//! color.  The log file appends, and it rolls over to a new file at midnight
-//! UTC or when it hits the size limit -- whichever comes first.
-//! All time in here is UTC, and every timestamp ends in Z to say so.
+//! color when it is a real terminal.  The log file appends, and it rolls
+//! over to a new file at midnight UTC or when it hits the size limit --
+//! whichever comes first. All time in here is UTC, and every timestamp ends 
+//! in Z to say so.
 //!
 //! Every line also ends with the file and line number it was logged from, so
 //! we can walk straight from a message to the code that said it.
@@ -38,7 +39,7 @@
 //! `tail -F` in another terminal.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -394,13 +395,15 @@ fn write_to_terminal(config: &ScribeConfig, priority: Priority, line: &str) {
         Priority::Warn => config.color_warn,
         Priority::Error => config.color_error,
     };
-
-    // Rust note: `println!` panics if the terminal has gone away, and a
-    // logger should never be the thing that kills the server.  `writeln!`
-    // returns the error instead, and `let _ =` says we are ignoring it on
-    // purpose.
+    // When the output is going to a file or a pipe (`> out.txt`, a systemd
+    // journal), the color codes would land in it as junk.  So we only send
+    // them to a real terminal.
     let mut terminal = io::stdout();
-    let _ = writeln!(terminal, "{}{}{}", ansi_code(color), line, ANSI_RESET);
+    if terminal.is_terminal() {
+        let _ = writeln!(terminal, "{}{}{}", ansi_code(color), line, ANSI_RESET);
+    } else {
+        let _ = writeln!(terminal, "{}", line);
+    }
 }
 
 fn write_to_file(scribe: &mut Scribe, now: &UtcTime, line: &str) {

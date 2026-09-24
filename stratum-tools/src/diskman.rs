@@ -3,8 +3,9 @@
 //! Author:   Jacob Chacko
 //!
 //! DiskMan, the Disk Manager.  The one place the server goes through to
-//! replace a whole file, to read one back, to delete one, and to make a
-//! folder.  A file is a path and its contents as bytes (a StratumFile).
+//! replace a whole file, to read one back, to move one, to delete one, and
+//! to make or delete a folder.  A file is a path and its contents as bytes
+//! (a StratumFile).
 //!
 //! We never write a file in place.  We write `path.tmp`, force it onto the
 //! disk, and then rename it over `path`.  If the server dies halfway through,
@@ -56,11 +57,15 @@
 //!
 //! A read of a file that isn't there is not logged, because for plenty of
 //! callers that is normal (the first run, with no config file yet).
+//!
+//! A crash between writing `path.tmp` and the rename leaves the `.tmp`
+//! behind.  It does no harm (the next save of that file wipes it), and
+//! `clear_leftovers()` sweeps them up at launch, before anything saves.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -291,7 +296,8 @@ pub fn flush() {
 /// the file).
 ///
 /// Don't use this and write_file() on the same path.  A write_file() could
-/// land first and then get written over by an older copy from the cache.
+/// land first and then get written over by an older copy from the cache, so
+/// write_file() refuses a path that is still waiting in here.
 // Rust note: this takes the StratumFile itself and not a `&` to it, so the
 // bytes move into the cache without being copied.  The caller can't use the
 // file after handing it over, and the compiler will say so if they try.
@@ -352,6 +358,11 @@ pub fn write_later(file: StratumFile) {
 ///
 /// A `.tmp` left behind by an earlier crash doesn't matter.  Creating the
 /// temp file wipes whatever was in it.
+///
+/// A path still waiting in the cache from a write_later() is refused, and
+/// logged.  The cached copy is older than this one, and the writer would put
+/// it on top of this one when it got to it.  That is the one way mixing the
+/// two kinds of write goes wrong, so it's the one that gets caught.
 // Rust note: `#[track_caller]` here passes the caller's location on to
 // Scribe, so an error line says `(stratum-tools/src/constellations.rs:253)` and not
 // somewhere in this file.  Every function between the caller and Scribe has
@@ -367,6 +378,12 @@ pub fn write_file(file: &StratumFile) -> io::Result<()> {
                                    "that path has no file name on the end");
         return Err(complain(&format!("DiskMan can't write {}", path.display()),
                             error));
+    }
+
+    if cached_copy(path).is_some() {
+        let error = io::Error::new(io::ErrorKind::InvalidInput,
+                                   "an older copy from write_later() is still waiting in the cache");
+        return Err(complain(&format!("DiskMan won't write {}", path.display()), error));
     }
 
     let folder = folder_of(path);
@@ -499,6 +516,234 @@ pub fn make_folder(folder: &Path) -> io::Result<()> {
     }
     scribe::info(Channel::Core, &format!("DiskMan made the folder {}", folder.display()));
     Ok(())
+}
+
+/// Makes a folder only our own user can open (0700).  Any folder above it
+/// that is missing gets made too, with the ordinary permissions.  For
+/// saved/ssl/, where the TLS key lives.
+///
+/// If the folder is already there and anybody else can get into it, it gets
+/// tightened to 0700, and the log says so.  A folder that is already private
+/// is fine, and quiet.
+#[track_caller]
+pub fn make_private_folder(folder: &Path) -> io::Result<()> {
+    match make_folder_private(folder) {
+        Ok(PrivateFolder::AlreadyPrivate) => Ok(()),
+        Ok(PrivateFolder::Made) => {
+            scribe::info(Channel::Core,
+                         &format!("DiskMan made the private folder {}", folder.display()));
+            Ok(())
+        }
+        Ok(PrivateFolder::Tightened) => {
+            scribe::info(Channel::Core,
+                         &format!("DiskMan made {} private.  Only our own user can open it now.",
+                                  folder.display()));
+            Ok(())
+        }
+        Err(error) => Err(complain(&format!("DiskMan can't make the private folder {}",
+                                            folder.display()), error)),
+    }
+}
+
+/// What make_folder_private() found, or did.
+#[derive(Debug, PartialEq)]
+enum PrivateFolder {
+    AlreadyPrivate,
+    Made,
+    Tightened,
+}
+
+/// The part of make_private_folder() that doesn't log, so the tests can run
+/// it.  "Private" means nobody but us can do anything with it: the group and
+/// everybody-else bits are all off.  A folder that is even tighter than 0700
+/// is left alone.
+// Rust note: `.mode()` on the permissions carries the file type in its high
+// bits, so `& 0o077` keeps only the group and everybody-else bits.
+fn make_folder_private(folder: &Path) -> io::Result<PrivateFolder> {
+    if folder.is_dir() {
+        let mode = fs::metadata(folder)?.permissions().mode();
+        if mode & 0o077 == 0 {
+            return Ok(PrivateFolder::AlreadyPrivate);
+        }
+        fs::set_permissions(folder, fs::Permissions::from_mode(0o700))?;
+        return Ok(PrivateFolder::Tightened);
+    }
+
+    // The folders above it get the ordinary permissions.  Only the last one
+    // is made private, from the moment it exists.
+    fs::create_dir_all(folder_of(folder))?;
+    DirBuilder::new().mode(0o700).create(folder)?;
+    Ok(PrivateFolder::Made)
+}
+
+/// Deletes an empty folder for good, and doesn't come back until the
+/// deletion is safe on the disk.  Only an empty one: a folder with anything
+/// in it is refused, and whatever is in it has to go first, one file at a
+/// time, through delete_file() or move_file().  Jacob's call, so a wrong
+/// path can't take a whole tree with it.  For an account's folder in
+/// saved/players/, once its player files have moved to saved/orphaned/.
+///
+/// A file still waiting in the cache anywhere under the folder would put the
+/// folder back when the writer got to it, so that is refused too.
+///
+/// A folder that isn't there comes back as `NotFound` and isn't logged, the
+/// same as delete_file().
+#[track_caller]
+pub fn delete_folder(folder: &Path) -> io::Result<()> {
+    let waiting = {
+        let guard = CACHE.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match guard.as_ref() {
+            Some(cache) => cache_has_files_under(cache, folder),
+            None => false,
+        }
+    };
+    if waiting {
+        let error = io::Error::new(io::ErrorKind::InvalidInput,
+                                   "something in it is still waiting in the cache to be written");
+        return Err(complain(&format!("DiskMan won't delete the folder {}", folder.display()),
+                            error));
+    }
+
+    if let Err(error) = fs::remove_dir(folder) {
+        if error.kind() == io::ErrorKind::NotFound {
+            return Err(error);
+        }
+        return Err(complain(&format!("DiskMan can't delete the folder {}", folder.display()),
+                            error));
+    }
+
+    // A folder is a name in the folder above it, so that is the one to force
+    // onto the disk.
+    let above = folder_of(folder);
+    if let Err(error) = sync_folder(&above) {
+        scribe::warn(Channel::Core,
+                     &format!("DiskMan deleted the folder {}, but couldn't force {} onto the \
+                     disk ({}).  A power cut in the next few seconds could bring it back.",
+                              folder.display(), above.display(), error));
+    }
+
+    Ok(())
+}
+
+/// Moves a file to a new path, and doesn't come back until the move is safe
+/// on the disk.  It is a rename, so it happens all at once: the file is at
+/// one path or the other, never half at each.  Makes the new folder if it
+/// isn't there.  For a deleted account's player files, on their way into
+/// saved/orphaned/players/ under their UUIDs.
+///
+/// It won't write over a file that is already at `to`.  It won't touch
+/// either path while it is waiting in the cache, so whoever moves a file
+/// that goes through write_later() calls flush() first.  A leftover
+/// `from.tmp` goes too.
+///
+/// A rename only works within one disk.  If `to` is on another one (a
+/// folder linked to the NVMe, say), the move fails, says so, and nothing
+/// has changed.
+///
+/// A file that isn't at `from` comes back as `NotFound` and isn't logged,
+/// the same as delete_file().
+#[track_caller]
+pub fn move_file(from: &Path, to: &Path) -> io::Result<()> {
+    let what = format!("DiskMan won't move {} to {}", from.display(), to.display());
+
+    if cached_copy(from).is_some() || cached_copy(to).is_some() {
+        let error = io::Error::new(io::ErrorKind::InvalidInput,
+                                   "one of them is still waiting in the cache to be written");
+        return Err(complain(&what, error));
+    }
+    if to.exists() {
+        let error = io::Error::new(io::ErrorKind::AlreadyExists,
+                                   "there is already a file at the new path");
+        return Err(complain(&what, error));
+    }
+
+    let to_folder = folder_of(to);
+    if let Err(error) = fs::create_dir_all(&to_folder) {
+        return Err(complain(&format!("DiskMan can't make the folder {}", to_folder.display()),
+                            error));
+    }
+
+    if let Err(error) = fs::rename(from, to) {
+        if error.kind() == io::ErrorKind::NotFound {
+            return Err(error);
+        }
+        return Err(complain(&format!("DiskMan can't move {} to {}", from.display(), to.display()),
+                            error));
+    }
+    let _ = fs::remove_file(temp_path_for(from));
+
+    // Both folders' lists of names changed.  The new one goes onto the disk
+    // first, so a power cut in between can't lose the file from both.
+    for folder in [to_folder, folder_of(from)] {
+        if let Err(error) = sync_folder(&folder) {
+            scribe::warn(Channel::Core,
+                         &format!("DiskMan moved {} to {}, but couldn't force {} onto the \
+                         disk ({}).  A power cut in the next few seconds could undo it.",
+                                  from.display(), to.display(), folder.display(), error));
+        }
+    }
+
+    Ok(())
+}
+
+/// Deletes every leftover `.tmp` file anywhere under `folder`.  Each one is
+/// a save that a crash cut short between the write and the rename, so the
+/// real file next to it is the last good save, and the `.tmp` is no use to
+/// anybody.  They were never a danger, since the next save of that file
+/// wipes its `.tmp`, but until then they lie around.
+///
+/// constellations::make_folders() calls this at launch, before anything
+/// saves.  That is the only time a `.tmp` can't be a save in progress, so
+/// nothing else should call it.
+///
+/// Each one gets an Info line, since each one means a save was lost.  It
+/// never goes through a link, so it can't wander out of the folder.  A
+/// folder it can't read is skipped, quietly: a leftover is only clutter.
+#[track_caller]
+pub fn clear_leftovers(folder: &Path) {
+    for path in find_leftovers(folder) {
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                scribe::info(Channel::Core,
+                             &format!("DiskMan cleared {}, left over from a save a crash cut short.",
+                                      path.display()));
+            }
+            Err(error) => {
+                scribe::warn(Channel::Core,
+                             &format!("DiskMan can't clear the leftover {} ({}).",
+                                      path.display(), error));
+            }
+        }
+    }
+}
+
+/// Every `.tmp` file under `folder`, going down into the folders inside it
+/// but never through a link.  It doesn't delete or log anything, so the
+/// tests can run it.
+// Rust note: `.flatten()` on the folder's entries quietly skips any entry
+// that couldn't be read, and `file_type()` on an entry describes the entry
+// itself -- a link is a link, not whatever it points at.
+fn find_leftovers(folder: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(_) => return found,
+    };
+
+    for entry in entries.flatten() {
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if kind.is_dir() {
+            found.extend(find_leftovers(&path));
+        } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "tmp") {
+            found.push(path);
+        }
+    }
+    found
 }
 
 
@@ -716,6 +961,13 @@ fn cache_insert(cache: &mut Cache, file: StratumFile) {
 /// A copy of the newest waiting bytes for `path`, if there are any.
 fn cache_lookup(cache: &Cache, path: &Path) -> Option<Vec<u8>> {
     cache.files.get(path).map(|pending| pending.contents.to_vec())
+}
+
+/// Whether anything waiting in the cache lives somewhere under `folder`.
+// Rust note: `starts_with` on a path goes a whole folder name at a time, so
+// `/saved/players/jac` doesn't count as holding `/saved/players/jacob/x`.
+fn cache_has_files_under(cache: &Cache, folder: &Path) -> bool {
+    cache.files.keys().any(|path| path.starts_with(folder))
 }
 
 /// Everything in the cache, ready to write.  The cache keeps all of it until
@@ -1097,8 +1349,6 @@ mod tests {
 
     #[test]
     fn a_private_file_is_private_from_the_start() {
-        use std::os::unix::fs::PermissionsExt;
-
         let folder = test_folder("private");
         let path = folder.join("key.pem");
         let temp_path = temp_path_for(&path);
@@ -1121,6 +1371,99 @@ mod tests {
         assert_eq!(mode, 0o600);
         assert_eq!(read_text(&path).unwrap(), "the key");
         assert!(!temp_path.exists());
+
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_private_folder_is_private_and_an_open_one_gets_tightened() {
+        let folder = test_folder("private_folder");
+        let ssl = folder.join("saved").join("ssl");
+
+        assert_eq!(make_folder_private(&ssl).unwrap(), PrivateFolder::Made);
+        assert_eq!(fs::metadata(&ssl).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(make_folder_private(&ssl).unwrap(), PrivateFolder::AlreadyPrivate);
+
+        // One made before this existed, with the ordinary permissions.
+        fs::set_permissions(&ssl, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(make_folder_private(&ssl).unwrap(), PrivateFolder::Tightened);
+        assert_eq!(fs::metadata(&ssl).unwrap().permissions().mode() & 0o777, 0o700);
+
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_moved_file_is_only_at_its_new_path() {
+        let folder = test_folder("move");
+        let from = folder.join("players").join("jacob").join("aldric.plyr");
+        let to = folder.join("orphaned").join("players")
+            .join("3f2a91c0-e4b7-4d1a-9c0e-2b7f5a6d8e10.plyr");
+
+        write_file(&StratumFile {
+            path: from.clone(),
+            contents: b"{}".to_vec(),
+        }).unwrap();
+        // What a crash in the middle of an old save would leave behind.
+        fs::write(temp_path_for(&from), "half").unwrap();
+
+        move_file(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert!(!temp_path_for(&from).exists());
+        assert_eq!(read_text(&to).unwrap(), "{}");
+
+        // A second time, there is nothing there to move.  (A new `to`, or
+        // the one already there would be the complaint, and it would log.)
+        let again = folder.join("orphaned").join("players").join("again.plyr");
+        assert_eq!(move_file(&from, &again).unwrap_err().kind(), io::ErrorKind::NotFound);
+
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn an_empty_folder_can_be_deleted() {
+        let folder = test_folder("delete_folder");
+        let account = folder.join("players").join("jacob");
+        fs::create_dir_all(&account).unwrap();
+
+        delete_folder(&account).unwrap();
+        assert!(!account.exists());
+        assert!(folder.join("players").exists());
+
+        // A second time, there is nothing there to delete.
+        assert_eq!(delete_folder(&account).unwrap_err().kind(), io::ErrorKind::NotFound);
+
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn files_in_the_cache_under_a_folder() {
+        let mut cache = new_cache();
+        cache_insert(&mut cache, a_file("/content/saved/players/jacob/aldric.plyr", "{}"));
+
+        assert!(cache_has_files_under(&cache, Path::new("/content/saved/players/jacob")));
+        assert!(cache_has_files_under(&cache, Path::new("/content/saved/players")));
+        assert!(!cache_has_files_under(&cache, Path::new("/content/saved/players/jac")));
+        assert!(!cache_has_files_under(&cache, Path::new("/content/saved/orphaned")));
+    }
+
+    #[test]
+    fn leftovers_are_found_but_never_through_a_link() {
+        let folder = test_folder("leftovers");
+        let players = folder.join("players");
+        let elsewhere = folder.join("elsewhere");
+        fs::create_dir_all(players.join("jacob")).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+
+        fs::write(players.join("stray.tmp"), "half").unwrap();
+        fs::write(players.join("jacob").join("aldric.plyr.tmp"), "half").unwrap();
+        fs::write(players.join("jacob").join("aldric.plyr"), "{}").unwrap();
+        fs::write(elsewhere.join("not_ours.tmp"), "half").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, players.join("link")).unwrap();
+
+        let mut found = find_leftovers(&players);
+        found.sort();
+        assert_eq!(found, vec![players.join("jacob").join("aldric.plyr.tmp"),
+                               players.join("stray.tmp")]);
 
         let _ = fs::remove_dir_all(&folder);
     }

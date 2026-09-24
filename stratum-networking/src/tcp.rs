@@ -56,7 +56,7 @@ use stratum_tools::scribe::{self, Channel};
 use stratum_tools::{constellations, security};
 
 use crate::CharacterCalls;
-use crate::protocol::{self, Choice, Packet, PacketType};
+use crate::protocol::{self, Choice, KickReason, Packet, PacketType};
 use crate::sessions::{self, Claim, Refused};
 use crate::tls;
 
@@ -833,7 +833,7 @@ fn delete(stream: &mut TlsStream, talk: &Conversation, setup: &Setup, packet: &P
     }
 }
 
-/// An EnterWorld.  Checks the character can be played, makes the login
+//// An EnterWorld.  Checks the character can be played, makes the login
 /// token, and sends it with the UDP port.  The token itself is never
 /// logged.
 fn enter_world(stream: &mut TlsStream, talk: &mut Conversation,
@@ -847,14 +847,31 @@ fn enter_world(stream: &mut TlsStream, talk: &mut Conversation,
                                     &protocol::character_result(false, &message))
             .is_ok(),
     };
+    
+    let character = name.to_ascii_lowercase();
+
+    // A character whose file is missing or damaged gets a kick, not a
+    // refusal: there's nothing the player can do about it but tell an
+    // admin.  The check call only hands back a sentence, so the list is
+    // how we tell "damaged" from "not on this account".
+    let damaged = (setup.calls.list)(&account)
+        .iter()
+        .any(|summary| summary.shortname == character && !summary.playable);
+    if damaged {
+        scribe::info(Channel::Security,
+                     &format!("{} on {} was kicked: {}'s player file is missing or damaged.",
+                              talk.peer,
+                              talk.username,
+                              account::display_name(&character)));
+        let _ = send(stream, &protocol::verbal_kick(KickReason::CorruptPlayerFile));
+        return false;
+    }
 
     if let Err(message) = (setup.calls.check)(&account, &name) {
         scribe::info(Channel::NetTcp,
                      &format!("{} on {} couldn't play a character: {:?}", talk.peer, talk.username, message));
         return send(stream, &protocol::character_result(false, &message)).is_ok();
     }
-
-    let character = name.to_ascii_lowercase();
 
     let token = match &talk.claim {
         Some(claim) => sessions::issue_token(claim, &character),

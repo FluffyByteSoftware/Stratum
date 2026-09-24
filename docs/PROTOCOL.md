@@ -46,6 +46,7 @@ The high four bits are the group and the low four are the packet inside it.
 | 0x14 | AuthenticationResult | server to client | `u8` result, string message |
 | 0x15 | SessionChoice | client to server | `u8` choice |
 | 0x16 | LoggedOutElsewhere | server to client | none |
+| 0x17 | VerbalKick | server to client | `u32` reason |
 | 0x20 | CharacterList | server to client | `u8` slots, `u8` count, then each character: string shortname, string longname, `u8` playable, `f32` x, y, z |
 | 0x21 | CreateCharacter | client to server | string name |
 | 0x22 | DeleteCharacter | client to server | string name |
@@ -99,7 +100,7 @@ Like result 2, result 3 only ever comes after the right password.  And an accoun
 Once in, the player sees their characters and the empty slots, and can make a character, delete one, or pick one to play.
 
 - **CreateCharacter** and **DeleteCharacter** each get a **CharacterResult** back.  On a success it is followed by a fresh CharacterList, so the client never has to work out the new list itself.  On a failure the message says why, in words the client can show as they are ("There is already a character called Aldric.").  Either way the connection stays open.
-- **EnterWorld** gets a **WorldTicket** back if the character can be played, and a CharacterResult with result 1 if it can't.
+- **EnterWorld** gets a **WorldTicket** back if the character can be played, and a CharacterResult with result 1 if it can't.  If it can't because its file on the server is missing or damaged, the answer is a **VerbalKick** with reason 2 instead, and the server hangs up: there is nothing the player can do about it but tell an admin.
 - **RequestCharacterList** gets a fresh CharacterList, any time in character select.  The server also sends one on its own after the login and after every change, so a client only needs to ask when it wants to be sure.
 
 The server decides what characters an account has.  An account has 3 slots for now, and the server refuses a fourth character whatever the client shows.  The slot count rides in the CharacterList, so a client never needs it written in.
@@ -109,6 +110,8 @@ Each character in the list has two names.  The **shortname** ("aldric", always l
 Deleting takes only the name.  The client makes the player type the name out to confirm before it sends the packet.  The server doesn't ask for the password again.
 
 Once the player has a WorldTicket, character select is over for that connection.  Anything from the CharacterSelect group after that is ignored (and logged).  The connection stays open for chat and the fallback.
+
+The server can hang up on a player at any point after the login, and when it does it says why first with a **VerbalKick**.  The reason is a number, not a sentence, so the client can act on it (a "notify an admin" screen, say) without matching the server's wording.  A reason the client doesn't know is shown the same as 0.
 
 SimpleTcpMesg works any time after the login.  Packets the server doesn't take at that point are ignored and logged, not refused.  A packet it can't read closes the connection.
 
@@ -218,6 +221,24 @@ Server to client, on the connection that just got logged out from somewhere else
 ```text
 01 00 00 00  16
 ```
+
+### 0x17 VerbalKick
+
+Server to client, any time after the login.  One `u32`: why the server is hanging up.  The server closes the connection straight after, so the client never has to answer it.
+
+| Reason | Meaning |
+|---|---|
+| 0 | Unknown.  Also what a client shows for a number it doesn't know. |
+| 1 | Reserved: the UDP side let the player go and their token is spent.  Nothing sends it yet. |
+| 2 | The character's player file is missing or damaged.  Tell an admin. |
+
+Kicked over a damaged player file:
+
+```text
+05 00 00 00  17  02 00 00 00
+```
+
+That is a length of 5: the type and the four bytes of the reason.
 
 ### 0x20 CharacterList
 
