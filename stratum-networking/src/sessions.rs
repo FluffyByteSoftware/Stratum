@@ -16,8 +16,11 @@
 //!
 //! The entry is also where an account's login token lives, once the player
 //! has picked a character, and where its UDP packets come from once the
-//! token has been used.  udp.rs looks tokens up here.  In memory only: a
-//! restart forgets every one of them, on purpose.
+//! token has been used.  The token is kept with the character it is for
+//! and the two UUIDs the game loop needs to put that player into the
+//! world, so the UDP side can hand the loop everything in one message
+//! without reading a file.  udp.rs looks tokens up here.  In memory only:
+//! a restart forgets every one of them, on purpose.
 //!
 //! A token connects once.  After that the UDP side knows the player by
 //! their address, and when it lets them go (they went quiet, or logged
@@ -47,18 +50,42 @@ struct Session {
     id: u64,
     /// Raised when somebody logs this session out from somewhere else.
     kicked: Arc<AtomicBool>,
-    /// The login token and the character it is for, once one is picked.
+    /// The login token, and who it is for, once a character is picked.
     /// A new one replaces the old.
-    ticket: Option<(String, String)>,
+    ticket: Option<Ticket>,
     /// Where the player's UDP packets come from, once the token has
     /// connected.  `None` until then.
     udp: Option<SocketAddr>,
 }
 
+/// A login token and what it opens: the character the player picked, its
+/// UUID, and the account's UUID.  The last two ride along so the game loop
+/// gets them in its message and doesn't have to read the account file.
+struct Ticket {
+    token: String,
+    character: String,
+    uuid: String,
+    account_uid: String,
+}
+
+/// Who a token connected, handed to udp.rs.  Everything the game loop's
+/// Entered message needs, and never the token itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Connected {
+    /// The account's username, lowercase.
+    pub username: String,
+    /// The character's short name, lowercase.
+    pub character: String,
+    /// The character's UUID.
+    pub uuid: String,
+    /// The account's UUID.
+    pub account_uid: String,
+}
+
 /// The most accounts logged in at once.  Jacob's number, for now.  The TCP
 /// side's MAX_CONNECTIONS is a little higher, so a full server still has
 /// room to tell the next player so.
-pub const MAX_LOGGED_IN: usize = 55;
+pub const MAX_LOGGED_IN: usize = 50;
 
 /// Why claim() said no.
 #[derive(Debug, PartialEq)]
@@ -131,8 +158,12 @@ pub fn take_over(username: &str) -> Option<Claim> {
 }
 
 /// Makes a login token for a claim's account and the character the player
-/// picked, and keeps it.  Hands back the token.  An `Err` says why not.
-pub fn issue_token(claim: &Claim, character: &str) -> Result<String, String> {
+/// picked, and keeps it with the character's UUID and the account's.
+/// Hands back the token.  An `Err` says why not.
+pub fn issue_token(claim: &Claim,
+                   character: &str,
+                   uuid: &str,
+                   account_uid: &str) -> Result<String, String> {
     let token = fingerprinter::new_token()
         .map_err(|error| format!("couldn't make a token: {}", error))?;
 
@@ -140,7 +171,12 @@ pub fn issue_token(claim: &Claim, character: &str) -> Result<String, String> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match sessions.get_mut(&claim.username) {
         Some(session) if session.id == claim.id => {
-            session.ticket = Some((token.clone(), character.to_string()));
+            session.ticket = Some(Ticket {
+                token: token.clone(),
+                character: character.to_string(),
+                uuid: uuid.to_string(),
+                account_uid: account_uid.to_string(),
+            });
             session.udp = None;
             Ok(token)
         }
@@ -150,11 +186,10 @@ pub fn issue_token(claim: &Claim, character: &str) -> Result<String, String> {
 }
 
 /// Connects a player over UDP with the token from their WorldTicket.  Hands
-/// back the account and the character, or `None` if nobody was handed that
-/// token, or it has already connected from a different address.  A repeat
-/// from the same address is fine: that is a client whose answer got lost,
-/// asking again.
-pub fn connect_udp(token: &str, from: SocketAddr) -> Option<(String, String)> {
+/// back who it connected, or `None` if nobody was handed that token, or it
+/// has already connected from a different address.  A repeat from the same
+/// address is fine: that is a client whose answer got lost, asking again.
+pub fn connect_udp(token: &str, from: SocketAddr) -> Option<Connected> {
     let mut sessions = SESSIONS.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     connect_udp_in(&mut sessions, token, from)
@@ -218,12 +253,12 @@ fn insert_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64) -
 /// so looking at each one is fine.
 fn connect_udp_in(sessions: &mut HashMap<String, Session>,
                   token: &str,
-                  from: SocketAddr) -> Option<(String, String)> {
+                  from: SocketAddr) -> Option<Connected> {
     for (username, session) in sessions.iter_mut() {
-        let Some((ticket_token, character)) = &session.ticket else {
+        let Some(ticket) = &session.ticket else {
             continue;
         };
-        if ticket_token != token {
+        if ticket.token != token {
             continue;
         }
         match session.udp {
@@ -231,7 +266,12 @@ fn connect_udp_in(sessions: &mut HashMap<String, Session>,
             Some(address) if address == from => {}
             Some(_) => return None,
         }
-        return Some((username.clone(), character.clone()));
+        return Some(Connected {
+            username: username.clone(),
+            character: ticket.character.clone(),
+            uuid: ticket.uuid.clone(),
+            account_uid: ticket.account_uid.clone(),
+        });
     }
     None
 }
@@ -345,7 +385,12 @@ mod tests {
     fn with_ticket(token: &str) -> HashMap<String, Session> {
         let mut sessions = HashMap::new();
         claim_in(&mut sessions, "jacob", 1).unwrap();
-        sessions.get_mut("jacob").unwrap().ticket = Some((token.to_string(), "aldric".to_string()));
+        sessions.get_mut("jacob").unwrap().ticket = Some(Ticket {
+            token: token.to_string(),
+            character: "aldric".to_string(),
+            uuid: "character-uuid".to_string(),
+            account_uid: "account-uuid".to_string(),
+        });
         sessions
     }
 
@@ -354,7 +399,12 @@ mod tests {
         let mut sessions = with_ticket("abc");
         let home: SocketAddr = "10.0.0.5:50000".parse().unwrap();
         let elsewhere: SocketAddr = "10.0.0.6:50000".parse().unwrap();
-        let expected = Some(("jacob".to_string(), "aldric".to_string()));
+        let expected = Some(Connected {
+            username: "jacob".to_string(),
+            character: "aldric".to_string(),
+            uuid: "character-uuid".to_string(),
+            account_uid: "account-uuid".to_string(),
+        });
 
         assert_eq!(connect_udp_in(&mut sessions, "abc", home), expected);
         // The answer got lost and the client asked again.

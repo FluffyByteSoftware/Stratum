@@ -136,7 +136,9 @@ fn state_text(state: ServerState) -> &'static str {
 /// The terminal goes quiet only once the start has worked, so anything
 /// networking has to warn about on the way up still shows here.
 fn start_server() -> bool {
-    if let Err(reason) = game_loop::start() {
+    let (to_game, from_net) = std::sync::mpsc::channel();
+
+    if let Err(reason) = game_loop::start(from_net) {
         let text = format!("The server didn't start.  {}", reason);
         scribe::error(Channel::Core, &text);
         return false;
@@ -150,7 +152,7 @@ fn start_server() -> bool {
         check: character::check_character,
         list: list_characters,
     };
-    match stratum_networking::start(calls) {
+    match stratum_networking::start(calls, to_game) {
         Ok(()) => {
             scribe::info(Channel::Core, "Server started.");
             say("Server started.");

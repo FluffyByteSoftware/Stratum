@@ -13,6 +13,10 @@ edition = "2024"
 [dependencies]
 stratum-tools = { path = "../stratum-tools" }
 stratum-cycle = { path = "../stratum-cycle" }
+# For GameMessage, the queue the network feeds the game loop.  This is the
+# allowed direction: the game may depend on networking, and networking
+# never depends on the game.
+stratum-networking = { path = "../stratum-networking" }
 
 bevy_ecs = "0.19.1"
 serde = { version = "1.0.229", features = ["derive"] }

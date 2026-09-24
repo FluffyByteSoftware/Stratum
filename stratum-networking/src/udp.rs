@@ -22,14 +22,17 @@
 //! logged out, or got logged out from somewhere else).  The thread checks
 //! for both every SWEEP_EVERY.
 //!
-//! This is the first step.  What a player sends once they're in has
-//! nowhere to go until there is a game loop, and the delivery modes come
-//! after that.
+//! When a player gets in, and when they go, the game loop hears about it
+//! through the queue (GameMessage in lib.rs): an Entered when the Connect
+//! is let in, a Left from the sweep.  The loop takes them on its next tick.
+//! What a player sends once they're in has nowhere to go yet; that is the
+//! next kinds of message, and the delivery modes come after that.
 
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -37,6 +40,7 @@ use std::time::{Duration, Instant};
 use stratum_tools::{account, constellations};
 use stratum_tools::scribe::{self, Channel};
 
+use crate::GameMessage;
 use crate::client_version;
 use crate::protocol::{self, ConnectAnswer, PacketType};
 use crate::sessions;
@@ -81,8 +85,9 @@ struct Player {
 }
 
 /// Binds the address and port from the config file and starts the thread.
-/// An `Err` says what went wrong, in words, and nothing is running.
-pub fn start() -> Result<(), String> {
+/// `to_game` is the sending end of the game loop's queue; the thread keeps
+/// it.  An `Err` says what went wrong, in words, and nothing is running.
+pub fn start(to_game: Sender<GameMessage>) -> Result<(), String> {
     let mut guard = UDP.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_some() {
@@ -100,7 +105,7 @@ pub fn start() -> Result<(), String> {
     let flag = Arc::clone(&stopping);
     let handle = thread::Builder::new()
         .name("udp-listener".to_string())
-        .spawn(move || listen(socket, flag))
+        .spawn(move || listen(socket, flag, to_game))
         .map_err(|error| format!("Couldn't start the UDP thread: {}", error))?;
 
     scribe::info(Channel::NetUdp, &format!("Listening on {}.", address));
@@ -131,14 +136,14 @@ pub fn stop() {
 
 /// The thread.  Reads a packet, deals with it, and every SWEEP_EVERY lets go
 /// of anybody who should go.
-fn listen(socket: UdpSocket, stopping: Arc<AtomicBool>) {
+fn listen(socket: UdpSocket, stopping: Arc<AtomicBool>, to_game: Sender<GameMessage>) {
     let mut players: HashMap<SocketAddr, Player> = HashMap::new();
     let mut buffer = [0u8; READ_BUFFER];
     let mut last_sweep = Instant::now();
 
     while !stopping.load(Ordering::SeqCst) {
         match socket.recv_from(&mut buffer) {
-            Ok((size, from)) => heard(&socket, &mut players, &buffer[..size], from),
+            Ok((size, from)) => heard(&socket, &mut players, &buffer[..size], from, &to_game),
             // Rust note: on Linux a read that runs out of time comes back as
             // WouldBlock, and elsewhere as TimedOut.  Either one only means
             // nothing arrived.
@@ -153,7 +158,7 @@ fn listen(socket: UdpSocket, stopping: Arc<AtomicBool>) {
         }
 
         if last_sweep.elapsed() >= SWEEP_EVERY {
-            sweep(&mut players);
+            sweep(&mut players, &to_game);
             last_sweep = Instant::now();
         }
     }
@@ -163,7 +168,8 @@ fn listen(socket: UdpSocket, stopping: Arc<AtomicBool>) {
 fn heard(socket: &UdpSocket,
          players: &mut HashMap<SocketAddr, Player>,
          bytes: &[u8],
-         from: SocketAddr) {
+         from: SocketAddr,
+         to_game: &Sender<GameMessage>) {
     let Ok(packet) = protocol::take_datagram(bytes) else {
         return;
     };
@@ -175,8 +181,8 @@ fn heard(socket: &UdpSocket,
             send(socket, from, &protocol::connect_result(ConnectAnswer::Accepted));
         }
         // TODO(game-loop): anything else a connected player sends goes up
-        // the game loop's queue.  Until there is one, it only keeps the
-        // player from going quiet.
+        // the queue as more kinds of GameMessage.  Until those exist, it
+        // only keeps the player from going quiet.
         return;
     }
 
@@ -199,13 +205,25 @@ fn heard(socket: &UdpSocket,
     }
 
     match sessions::connect_udp(&token, from) {
-        Some((username, character)) => {
+        Some(connected) => {
             scribe::info(Channel::Security,
                          &format!("{} is in the world as {}, over UDP from {}.",
-                                  username,
-                                  account::display_name(&character),
+                                  connected.username,
+                                  account::display_name(&connected.character),
                                   from));
-            players.insert(from, Player { username, character, last_heard: Instant::now() });
+            players.insert(from, Player {
+                username: connected.username.clone(),
+                character: connected.character.clone(),
+                last_heard: Instant::now(),
+            });
+            // The game loop puts them into the world on its next tick.
+            tell_game(to_game, GameMessage::Entered {
+                account: connected.username,
+                account_uid: connected.account_uid,
+                character: connected.character,
+                uuid: connected.uuid,
+                address: from,
+            });
             send(socket, from, &protocol::connect_result(ConnectAnswer::Accepted));
         }
         None => {
@@ -223,9 +241,19 @@ fn send(socket: &UdpSocket, to: SocketAddr, bytes: &[u8]) {
     }
 }
 
+/// Puts a message on the game loop's queue.  It only fails if the loop has
+/// gone, and the Launcher stops networking before the loop, so that would
+/// be a crash worth a line in the log.
+fn tell_game(to_game: &Sender<GameMessage>, message: GameMessage) {
+    if to_game.send(message).is_err() {
+        scribe::warn(Channel::NetUdp, "The game loop isn't listening.  A player's message was dropped.");
+    }
+}
+
 /// Lets go of every player whose TCP side is gone, and every one who has
-/// been quiet for SILENCE_LIMIT.
-fn sweep(players: &mut HashMap<SocketAddr, Player>) {
+/// been quiet for SILENCE_LIMIT.  The game loop gets a Left for each, so
+/// it can save them and take them out of the world.
+fn sweep(players: &mut HashMap<SocketAddr, Player>, to_game: &Sender<GameMessage>) {
     // Rust note: retain() keeps the entries the closure says true for and
     // drops the rest.
     players.retain(|address, player| {
@@ -236,6 +264,7 @@ fn sweep(players: &mut HashMap<SocketAddr, Player>) {
                          &format!("{} ({}) left the world.  Their session ended.",
                                   player.username,
                                   account::display_name(&player.character)));
+            tell_game(to_game, GameMessage::Left { account: player.username.clone(), address: *address });
             return false;
         }
 
@@ -246,6 +275,7 @@ fn sweep(players: &mut HashMap<SocketAddr, Player>) {
                                   player.username,
                                   account::display_name(&player.character),
                                   SILENCE_LIMIT.as_secs()));
+            tell_game(to_game, GameMessage::Left { account: player.username.clone(), address: *address });
             // TODO(udp-timeout): tell the TCP side, so the player gets sent
             // back to character select.  That packet doesn't exist yet.
             return false;

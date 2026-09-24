@@ -873,10 +873,21 @@ fn enter_world(stream: &mut TlsStream, talk: &mut Conversation,
         return send(stream, &protocol::character_result(false, &message)).is_ok();
     }
 
-    let token = match &talk.claim {
-        Some(claim) => sessions::issue_token(claim, &character),
-        None => Err("the connection isn't logged in".to_string()),
+    // The character's UUID and the account's ride with the token, so the
+    // UDP side can hand the game loop everything it needs to put the
+    // player into the world without reading the account again.  The check
+    // above already found the character, so a missing UUID is our fault.
+    let uuid = account.characters.iter()
+        .find(|c| c.name == character)
+        .map(|c| c.uuid.clone());
+    let token = match (&talk.claim, uuid) {
+        (Some(claim), Some(uuid)) => {
+            sessions::issue_token(claim, &character, &uuid, &account.account_uid)
+        }
+        (None, _) => Err("the connection isn't logged in".to_string()),
+        (_, None) => Err("the character isn't on the account".to_string()),
     };
+
     match token {
         Ok(token) => {
             scribe::info(Channel::Security,
@@ -929,8 +940,7 @@ fn send_list(stream: &mut TlsStream, talk: &Conversation, setup: &Setup) -> bool
     let account = match current_account(talk) {
         Ok(account) => account,
         Err(message) => return send(stream,
-                                    &protocol::character_result(false, &message))
-            .is_ok(),
+            &protocol::character_result(false, &message)).is_ok(),
     };
     let characters = (setup.calls.list)(&account);
     let slots = account::MAX_CHARACTERS.min(u8::MAX as usize) as u8;

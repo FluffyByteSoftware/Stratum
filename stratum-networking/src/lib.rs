@@ -8,13 +8,18 @@
 //! here.
 //!
 //! The network never touches game state directly.  Its threads hand
-//! messages to the game loop through queues and take the answers back the
-//! same way.  That is the one rule that keeps a slow client from slowing
-//! the simulation.
+//! messages to the game loop through a queue (GameMessage, below), and the
+//! loop empties it once a tick.  That is the one rule that keeps a slow
+//! client from slowing the simulation.
 //!
 //! And this crate never depends on stratum-game.  Where it needs the
 //! game's code (making, deleting, checking and listing characters), the
-//! Launcher, which can see both, hands it in at start().
+//! Launcher, which can see both, hands it in at start().  The queue goes
+//! the other way: the Launcher makes it, hands this crate the sending end,
+//! and hands the game loop the receiving end.
+
+use std::net::SocketAddr;
+use std::sync::mpsc::Sender;
 
 use stratum_tools::account::Account;
 
@@ -65,12 +70,53 @@ pub struct CharacterSummary {
     pub z: f32,
 }
 
-pub fn start(calls: CharacterCalls) -> Result<(), String> {
+/// A note from the network to the game loop.  The UDP thread puts one on
+/// the queue when something happens to a player, and the loop takes them
+/// all at the top of its next tick.  The loop only ever sees a player;
+/// which account, connection and address belong to them stays in here.
+///
+/// Two kinds so far.  Movement, chat and combat come later, on the same
+/// queue.
+// Rust note: an enum where each variant carries its own fields.  In C#
+// this would be an abstract record with a subclass per kind, and the loop
+// does a `match` on it, one arm per kind.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GameMessage {
+    /// A player's UDP Connect was let in.  The loop reads their player
+    /// file, puts them into the world, and fills in where their packets
+    /// come from.  Everything the loop needs to do that is here, so it
+    /// touches one file and nothing else.
+    Entered {
+        /// The account's username, lowercase.
+        account: String,
+        /// The account's UUID, for the Player component.
+        account_uid: String,
+        /// The character's short name, lowercase.
+        character: String,
+        /// The character's UUID, which the player file has to agree with.
+        uuid: String,
+        /// Where the player's UDP packets come from.
+        address: SocketAddr,
+    },
+    /// A player has gone: quiet too long, logged out, or logged out from
+    /// somewhere else.  The loop reads them back, saves them and takes
+    /// them out.  The address says which stay this is for: a player who
+    /// took their own session over can be Entered again before the old
+    /// stay's Left arrives, and the loop leaves the new one alone.
+    Left {
+        account: String,
+        address: SocketAddr,
+    },
+}
+
+/// Starts both sides.  `to_game` is the sending end of the queue the
+/// Launcher made; the UDP thread keeps it.
+pub fn start(calls: CharacterCalls, to_game: Sender<GameMessage>) -> Result<(), String> {
     // The client list first, so a bad one stops us before anything listens.
     client_version::check()?;
     tcp::start(calls)?;
     // If UDP won't start, TCP comes back down, so nothing is left running.
-    if let Err(error) = udp::start() {
+    if let Err(error) = udp::start(to_game) {
         tcp::stop();
         return Err(error);
     }
