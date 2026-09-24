@@ -27,6 +27,7 @@ use stratum_tools::scribe::{self, Channel};
 use stratum_tools::security;
 use stratum_game::character;
 use stratum_game::player_file;
+use stratum_game::game_loop;
 use stratum_networking::CharacterSummary;
 
 /// Where the server is in its life.  It decides what S says and whether Q is
@@ -124,12 +125,23 @@ fn state_text(state: ServerState) -> &'static str {
     }
 }
 
-/// Starts networking.  True when it is running.  A refusal comes with its
-/// reason in words, and the admin sees it in the menu.
+/// Starts the game loop, then networking.  True when both are running.  A
+/// refusal comes with its reason in words, and the admin sees it in the
+/// menu.
+///
+/// The game loop goes first, so the world is ticking before anybody can get
+/// in.  If networking won't start, the loop stops again, so the server is
+/// either all the way up or not up at all.
 ///
 /// The terminal goes quiet only once the start has worked, so anything
 /// networking has to warn about on the way up still shows here.
 fn start_server() -> bool {
+    if let Err(reason) = game_loop::start() {
+        let text = format!("The server didn't start.  {}", reason);
+        scribe::error(Channel::Core, &text);
+        return false;
+    }
+
     // The game's character functions, handed to networking, which can't
     // see the game itself.
     let calls = stratum_networking::CharacterCalls {
@@ -146,6 +158,7 @@ fn start_server() -> bool {
             true
         }
         Err(reason) => {
+            game_loop::stop();
             let text = format!("The server didn't start.  {}", reason);
             scribe::error(Channel::Core, &text);
             false
@@ -184,11 +197,14 @@ fn list_characters(account: &Account) -> Vec<CharacterSummary> {
     list
 }
 
-/// Stops networking.  The terminal comes back first, so a warning from the
-/// stop itself lands in front of the admin who asked for it.
+/// Stops networking, then the game loop.  Networking goes first, so nothing
+/// new can come in while the world winds down.  The terminal comes back
+/// before either, so a warning from the stop lands in front of the admin
+/// who asked for it.
 fn stop_server() {
     scribe::quiet_terminal(false);
     stratum_networking::stop();
+    game_loop::stop();
     scribe::info(Channel::Core, "Server stopped.");
     say("Server stopped.");
 }

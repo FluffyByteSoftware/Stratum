@@ -6,7 +6,7 @@
 # apply to all of them at once.
 
 [workspace]
-members = ["stratum-tools", "stratum-launcher" , "stratum-networking", "stratum-game"]
+members = ["stratum-tools", "stratum-launcher" , "stratum-networking", "stratum-game", "stratum-cycle"]
 resolver = "3"
 
 # Argon2 is slow on purpose, but a debug build makes it slow by accident too

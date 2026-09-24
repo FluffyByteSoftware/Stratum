@@ -1,0 +1,13 @@
+# File:     stratum-cycle/Cargo.toml
+# Project:  Stratum Game
+# Author:   Jacob Chacko
+#
+# The tick timers, as a library.  It keeps the clock and counts the ticks,
+# and it depends on nothing at all, so anything in Stratum can use it.
+
+[package]
+name = "stratum-cycle"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
