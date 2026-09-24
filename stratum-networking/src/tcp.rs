@@ -833,7 +833,7 @@ fn delete(stream: &mut TlsStream, talk: &Conversation, setup: &Setup, packet: &P
     }
 }
 
-//// An EnterWorld.  Checks the character can be played, makes the login
+/// An EnterWorld.  Checks the character can be played, makes the login
 /// token, and sends it with the UDP port.  The token itself is never
 /// logged.
 fn enter_world(stream: &mut TlsStream, talk: &mut Conversation,
