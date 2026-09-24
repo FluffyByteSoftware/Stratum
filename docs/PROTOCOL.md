@@ -66,7 +66,7 @@ Every packet has its own section further down, with example bytes.
 3. The client sends **SecretWord**, which is `potato` for now.  It is a filter for port scanners and bots, not security.  It may change with the date later.
 4. The server sends **AwaitingAuthentication**.
 5. The client sends **AuthenticationRequest**.  The password goes as typed, in plain text, which is safe because it is inside TLS.  The client doesn't hash it.
-6. The server sends **AuthenticationResult**.  It never arrives sooner than 150 ms after the request, right or wrong, so the answer's timing says nothing about whether the name exists.
+6. The server sends **AuthenticationResult**.  It never arrives sooner than 150 ms after the request, right or wrong, so the answer's timing says nothing about whether the name exists.  It can arrive later: the server checks one password at a time, so when several people log in at once, each waits their turn.  With a full server logging in together that can be several seconds, so a client should wait at least 10 seconds for the answer before giving up.
 7. On a success, the server sends the **CharacterList** straight after, without being asked.  The player is in character select.
 
 On any failure the server sends an AuthenticationResult with result 1 and closes the connection.  A failure is any of these:
@@ -87,6 +87,12 @@ An account is only ever on once.  If the password is right but the account is al
 - **1, disconnect.**  The server closes this connection and leaves the other one alone.  That one is for shared accounts, so you don't kick your brother off because you wanted to play.
 
 Result 2 only ever comes after the right password, so it tells a stranger nothing.  The player gets 30 seconds to choose.  Choosing "disconnect", running out the 30 seconds, or sending anything but a SessionChoice closes the connection with no answer and no 2 second hold, because none of those is a failed login.
+
+### Server full
+
+The server takes 50 players at once, counting everybody past the password, in character select or in the world.  If the password is right and 50 are already on, the AuthenticationResult comes back with result 3, "The server is full.", and the server closes the connection.  There is no 2 second hold, because it isn't a failed login, so the client can try again straight away.
+
+Like result 2, result 3 only ever comes after the right password.  And an account that is already on gets result 2 even on a full server, so a player can always take over their own session.
 
 ## Character select
 
@@ -172,6 +178,7 @@ Server to client.  A `u8` result, then a string for the player.
 | 0 | in | "Welcome to Stratum." |
 | 1 | AUTHENTICATION FAILED | "Invalid Credentials", whatever went wrong |
 | 2 | ALREADY LOGGED IN | "This account is already logged in." |
+| 3 | SERVER FULL | "The server is full." |
 
 A failure:
 
@@ -187,6 +194,14 @@ Already logged in:
 28 00 00 00  14  02  22 00 00 00  54 68 69 73 20 61 63 63 6F 75 6E 74 20 69 73 20
                                   61 6C 72 65 61 64 79 20 6C 6F 67 67 65 64 20 69 6E 2E
 ```
+
+Server full:
+
+```text
+19 00 00 00  14  03  13 00 00 00  54 68 65 20 73 65 72 76 65 72 20 69 73 20 66 75 6C 6C 2E
+```
+
+The same length as a failure, 25, because "The server is full." is 19 bytes too.
 
 ### 0x15 SessionChoice
 

@@ -58,7 +58,7 @@ struct Session {
 /// The most accounts logged in at once.  Jacob's number, for now.  The TCP
 /// side's MAX_CONNECTIONS is a little higher, so a full server still has
 /// room to tell the next player so.
-pub const MAX_LOGGED_IN: usize = 1;
+pub const MAX_LOGGED_IN: usize = 55;
 
 /// Why claim() said no.
 #[derive(Debug, PartialEq)]
