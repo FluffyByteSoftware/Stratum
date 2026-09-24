@@ -2,7 +2,7 @@
 
 What the server and a client say to each other, down to the byte.  The server's half is `stratum-networking/src/protocol.rs`.  The C# half lives with the client.  This document is what both are written from, so when a half disagrees with it, the half is wrong.
 
-Two sides.  TCP carries the login, character select, and later chat.  UDP carries the game.  The TCP side has two groups so far, Login and CharacterSelect.  The UDP side has its first two packets, which get a player from a WorldTicket to connected.
+Two sides.  TCP carries the login, character select, and later chat.  UDP carries the game.  The TCP side has two groups so far, Login and CharacterSelect.  The UDP side has three packets so far: two get a player from a WorldTicket to connected, and one keeps them there.
 
 ## The connection
 
@@ -56,6 +56,7 @@ The high four bits are the group and the low four are the packet inside it.
 | 0x26 | RequestCharacterList | client to server | none |
 | 0x30 | Connect | client to server, UDP | string version, string token |
 | 0x31 | ConnectResult | server to client, UDP | `u8` result, string message |
+| 0x32 | KeepAlive | client to server, UDP | none |
 | 0xF0 | SimpleTcpMesg | either way | string |
 
 Every packet has its own section further down, with example bytes.
@@ -109,7 +110,7 @@ Each character in the list has two names.  The **shortname** ("aldric", always l
 
 Deleting takes only the name.  The client makes the player type the name out to confirm before it sends the packet.  The server doesn't ask for the password again.
 
-Once the player has a WorldTicket, character select is over for that connection.  Anything from the CharacterSelect group after that is ignored (and logged).  The connection stays open for chat and the fallback.
+Once the player has a WorldTicket, character select is over for that connection.  Anything from the CharacterSelect group after that is ignored (and logged).  The connection stays open for chat, for as long as the player is in the world.
 
 The server can hang up on a player at any point after the login, and when it does it says why first with a **VerbalKick**.  The reason is a number, not a sentence, so the client can act on it (a "notify an admin" screen, say) without matching the server's wording.  A reason the client doesn't know is shown the same as 0.
 
@@ -138,9 +139,13 @@ UDP can lose any packet, the Connect and its answer included.  So the client sen
 
 The server never answers a packet it can't use.  Junk, a Connect whose token isn't 64 characters, or anything but a Connect from an address it doesn't know, gets silence.  An answer to a stranger is how a server gets used to flood somebody else, so every answer the server sends is smaller than the Connect it answers.
 
-A token connects once.  If the UDP side goes 10 seconds without hearing from the client, the server ends it, and the TCP connection takes the player back to character select for a new token.  A short drop that picks back up from the same address carries on as if nothing happened.  To keep that clock from running out, the client sends something at least once a second, even when the player is standing still.  That packet, and the TCP packet that tells the client it's back in character select, come next.
+Staying in:
 
-Logging out of the game goes back to character select the same way.  Closing the client (`/camp desktop`) is an ordinary hang-up.
+- The client sends a **KeepAlive** once a second for as long as the player is in the world, even when they're standing still.  Anything else it sends over UDP counts too; a KeepAlive is what it sends when it has nothing else to say.  The server never answers one.
+- If the server goes 10 seconds without hearing anything from the client, it lets the player go.  It checks once a second, so it can be up to 11.  The token is spent, the character is saved, and the TCP side sends a **VerbalKick** with reason 1 and hangs up.  The whole session is over, and the client goes back to asking for the username and password.
+- A short drop that picks back up from the same address inside the 10 seconds carries on as if nothing happened.
+
+Leaving the world is the client hanging up the TCP connection, whether the player is going back to the username and password (`/camp`) or closing the client (`/camp desktop`).  The server can't tell the two apart and doesn't need to: within a second it lets the UDP side go too, and the character is saved.
 
 ## The packets, one at a time
 
@@ -229,7 +234,7 @@ Server to client, any time after the login.  One `u32`: why the server is hangin
 | Reason | Meaning |
 |---|---|
 | 0 | Unknown.  Also what a client shows for a number it doesn't know. |
-| 1 | Reserved: the UDP side let the player go and their token is spent.  Nothing sends it yet. |
+| 1 | The UDP side went 10 seconds without hearing from the player and let them go.  Their token is spent and the session is over; they have to log in again. |
 | 2 | The character's player file is missing or damaged.  Tell an admin. |
 
 Kicked over a damaged player file:
@@ -239,6 +244,12 @@ Kicked over a damaged player file:
 ```
 
 That is a length of 5: the type and the four bytes of the reason.
+
+Kicked for going quiet over UDP:
+
+```text
+05 00 00 00  17  01 00 00 00
+```
 
 ### 0x20 CharacterList
 
@@ -354,3 +365,13 @@ An outdated client:
 ```
 
 That is 29 bytes: the type, the result, 4 for the string's length, and 23 for "Outdated Client Failure".
+
+### 0x32 KeepAlive
+
+Client to server, over UDP, once a second while the player is in the world.  No payload, and no answer.  It only keeps the 10 second clock from running out.  From an address that hasn't connected, it gets silence like anything else from a stranger.
+
+```text
+32
+```
+
+That is 1 byte: the type, with no length in front.

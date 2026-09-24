@@ -17,16 +17,20 @@
 //! anything but a Connect from an address it doesn't know.  A server that
 //! answers strangers can be used to flood somebody else.
 //!
-//! A player who goes SILENCE_LIMIT without sending anything is let go, and
-//! their token is spent.  So is a player whose TCP side has gone (they
-//! logged out, or got logged out from somewhere else).  The thread checks
-//! for both every SWEEP_EVERY.
+//! A player stays in by sending a KeepAlive once a second.  One who goes
+//! SILENCE_LIMIT without sending anything is let go, their token is spent,
+//! and their TCP side hangs up on them with a VerbalKick, so the whole
+//! session ends and the client goes back to the username and password.  A
+//! player whose TCP side has gone (they logged out, or got logged out from
+//! somewhere else) is let go too.  The thread checks for both every
+//! SWEEP_EVERY.
 //!
 //! When a player gets in, and when they go, the game loop hears about it
 //! through the queue (GameMessage in lib.rs): an Entered when the Connect
 //! is let in, a Left from the sweep.  The loop takes them on its next tick.
-//! What a player sends once they're in has nowhere to go yet; that is the
-//! next kinds of message, and the delivery modes come after that.
+//! Anything else a player sends once they're in has nowhere to go yet;
+//! that is the next kinds of message, and the delivery modes come after
+//! that.
 
 use std::collections::HashMap;
 use std::io;
@@ -176,17 +180,22 @@ fn heard(socket: &UdpSocket,
 
     if let Some(player) = players.get_mut(&from) {
         player.last_heard = Instant::now();
+        if packet.kind == PacketType::KeepAlive as u8 {
+            // Hearing it was the whole point.  No answer.
+            return;
+        }
         if packet.kind == PacketType::Connect as u8 {
             // Our answer got lost, and the client is asking again.
             send(socket, from, &protocol::connect_result(ConnectAnswer::Accepted));
         }
         // TODO(game-loop): anything else a connected player sends goes up
         // the queue as more kinds of GameMessage.  Until those exist, it
-        // only keeps the player from going quiet.
+        // keeps the player from going quiet, the same as a KeepAlive.
         return;
     }
 
-    // A stranger only gets anywhere with a Connect.
+    // A stranger only gets anywhere with a Connect.  A KeepAlive from an
+    // address we don't know gets silence like everything else.
     if packet.kind != PacketType::Connect as u8 {
         return;
     }
@@ -269,6 +278,8 @@ fn sweep(players: &mut HashMap<SocketAddr, Player>, to_game: &Sender<GameMessage
         }
 
         if player.last_heard.elapsed() >= SILENCE_LIMIT {
+            // This also marks the session let go, and its TCP side hangs up
+            // on them within a read wait.
             sessions::end_udp(&player.username, *address);
             scribe::info(Channel::NetUdp,
                          &format!("{} ({}) went quiet for {} seconds.  Their token is spent.",
@@ -276,8 +287,6 @@ fn sweep(players: &mut HashMap<SocketAddr, Player>, to_game: &Sender<GameMessage
                                   account::display_name(&player.character),
                                   SILENCE_LIMIT.as_secs()));
             tell_game(to_game, GameMessage::Left { account: player.username.clone(), address: *address });
-            // TODO(udp-timeout): tell the TCP side, so the player gets sent
-            // back to character select.  That packet doesn't exist yet.
             return false;
         }
 

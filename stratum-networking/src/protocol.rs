@@ -99,17 +99,19 @@ pub enum ConnectAnswer {
 /// a VerbalKick.  A number, not a sentence, so the client can act on it
 /// (a "notify an admin" screen, say) without having to match our wording.
 /// Only the reasons the server sends are in here; docs/PROTOCOL.md has the
-/// whole numbering, with 0 for a reason the client doesn't know and 1
-/// reserved for the UDP side letting a player go.
+/// whole numbering, with 0 for a reason the client doesn't know.
 // Rust note: `repr(u32)` stores this as four bytes, the same as a C#
 // `enum : uint`.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum KickReason {
+    /// The UDP side let the player go (they went quiet), and their token is
+    /// spent.  The whole session ends with it, and the client goes back to
+    /// the username and password.
+    UdpLetGo = 1,
     /// The character's player file is missing or damaged.  The player can
     /// see it in the list but can't play it, and an admin has to look.
     CorruptPlayerFile = 2,
-    
 }
 
 /// Every packet type there is so far.  The high four bits say the group and
@@ -169,6 +171,10 @@ pub enum PacketType {
     /// Server to client, over UDP.  A ConnectAnswer byte, then a string for
     /// the player.
     ConnectResult = 0x31,
+    /// Client to server, over UDP.  No payload.  Sent once a second while
+    /// the player is in the world, so the server knows they're still there.
+    /// No answer.
+    KeepAlive = 0x32,
     /// Either way, once logged in.  One string.  The server sends it
     /// straight back, which is how we test that both directions work.
     SimpleTcpMesg = 0xF0,
@@ -196,6 +202,7 @@ impl PacketType {
             0x26 => Some(PacketType::RequestCharacterList),
             0x30 => Some(PacketType::Connect),
             0x31 => Some(PacketType::ConnectResult),
+            0x32 => Some(PacketType::KeepAlive),
             0xF0 => Some(PacketType::SimpleTcpMesg),
             _ => None,
         }
@@ -700,6 +707,7 @@ mod tests {
             PacketType::RequestCharacterList,
             PacketType::Connect,
             PacketType::ConnectResult,
+            PacketType::KeepAlive,
             PacketType::SimpleTcpMesg];
         for kind in every {
             assert_eq!(PacketType::from_byte(kind as u8), Some(kind));
@@ -707,7 +715,7 @@ mod tests {
         assert_eq!(PacketType::from_byte(0x00), None);
         assert_eq!(PacketType::from_byte(0x18), None);
         assert_eq!(PacketType::from_byte(0x27), None);
-        assert_eq!(PacketType::from_byte(0x32), None);
+        assert_eq!(PacketType::from_byte(0x33), None);
     }
 
     #[test]
@@ -715,6 +723,7 @@ mod tests {
         // The same bytes docs/PROTOCOL.md will show.  The length is 5: the
         // type, then the reason as four bytes, lowest first.
         assert_eq!(verbal_kick(KickReason::CorruptPlayerFile), vec![5, 0, 0, 0, 0x17, 2, 0, 0, 0]);
+        assert_eq!(verbal_kick(KickReason::UdpLetGo), vec![5, 0, 0, 0, 0x17, 1, 0, 0, 0]);
     }
 
 }

@@ -24,7 +24,10 @@
 //!
 //! A token connects once.  After that the UDP side knows the player by
 //! their address, and when it lets them go (they went quiet, or logged
-//! out) the token goes with it.
+//! out) the token goes with it.  When they went quiet, the entry is also
+//! marked `let_go`, and the connection holding it sees that within one read
+//! wait, tells the client, and hangs up.  From the server's side a player
+//! the UDP side let go is gone altogether.
 //!
 //! A connection holds its entry as a `Claim`.  When the connection ends,
 //! the claim goes away and takes the entry with it, whichever way the
@@ -56,6 +59,9 @@ struct Session {
     /// Where the player's UDP packets come from, once the token has
     /// connected.  `None` until then.
     udp: Option<SocketAddr>,
+    /// Set when the UDP side lets the player go for going quiet.  The
+    /// connection hangs up when it sees it.
+    let_go: bool,
 }
 
 /// A login token and what it opens: the character the player picked, its
@@ -205,11 +211,21 @@ pub fn udp_address(username: &str) -> Option<SocketAddr> {
 }
 
 /// Ends an account's UDP session and spends its token, so the token can't
-/// connect again.  Only if it is still connected from this address.
+/// connect again, and marks the session let go, so its connection hangs
+/// up.  Only if it is still connected from this address.
 pub fn end_udp(username: &str, from: SocketAddr) {
     let mut sessions = SESSIONS.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     end_udp_in(&mut sessions, username, from);
+}
+
+/// True once the UDP side has let this claim's player go.  The connection
+/// asks every read wait.  Taking the claim, not the name, means a session
+/// that took this one over can't answer for it.
+pub fn let_go(claim: &Claim) -> bool {
+    let sessions = SESSIONS.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let_go_in(&sessions, &claim.username, claim.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +261,8 @@ fn take_over_in(sessions: &mut HashMap<String, Session>,
 /// Puts a fresh entry in, replacing any old one, token and all.
 fn insert_in(sessions: &mut HashMap<String, Session>, username: &str, id: u64) -> Arc<AtomicBool> {
     let kicked = Arc::new(AtomicBool::new(false));
-    sessions.insert(username.to_string(), Session { id, kicked: Arc::clone(&kicked), ticket: None, udp: None });
+    sessions.insert(username.to_string(),
+                    Session { id, kicked: Arc::clone(&kicked), ticket: None, udp: None, let_go: false });
     kicked
 }
 
@@ -281,7 +298,15 @@ fn end_udp_in(sessions: &mut HashMap<String, Session>, username: &str, from: Soc
         if session.udp == Some(from) {
             session.udp = None;
             session.ticket = None;
+            session.let_go = true;
         }
+    }
+}
+
+fn let_go_in(sessions: &HashMap<String, Session>, username: &str, id: u64) -> bool {
+    match sessions.get(username) {
+        Some(session) => session.id == id && session.let_go,
+        None => false,
     }
 }
 
@@ -435,7 +460,30 @@ mod tests {
 
         end_udp_in(&mut sessions, "jacob", home);
         assert_eq!(connect_udp_in(&mut sessions, "abc", home), None);
-        // The account itself is still on, back in character select.
+        // The entry is still there until its connection sees it's been let
+        // go and hangs up.
         assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn a_session_let_go_by_the_udp_side_is_told_so() {
+        let mut sessions = with_ticket("abc");
+        let home: SocketAddr = "10.0.0.5:50000".parse().unwrap();
+        let elsewhere: SocketAddr = "10.0.0.6:50000".parse().unwrap();
+        connect_udp_in(&mut sessions, "abc", home).unwrap();
+        assert!(!let_go_in(&sessions, "jacob", 1));
+
+        // The wrong address lets nobody go.
+        end_udp_in(&mut sessions, "jacob", elsewhere);
+        assert!(!let_go_in(&sessions, "jacob", 1));
+
+        end_udp_in(&mut sessions, "jacob", home);
+        assert!(let_go_in(&sessions, "jacob", 1));
+
+        // A session that took this one over starts fresh, and the old
+        // claim's number doesn't answer for it.
+        take_over_in(&mut sessions, "jacob", 2).unwrap();
+        assert!(!let_go_in(&sessions, "jacob", 2));
+        assert!(!let_go_in(&sessions, "jacob", 1));
     }
 }

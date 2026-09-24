@@ -31,8 +31,9 @@
 //!
 //! Then character select.  The player gets their list, and can make a
 //! character, delete one, or pick one to play.  Picking one gets them a
-//! login token and the UDP port to take it to.  Going into the world from
-//! there waits for the UDP side and the game loop.
+//! login token and the UDP port to take it to.  If the UDP side lets them
+//! go for going quiet, this side sends a VerbalKick and hangs up, and the
+//! whole session ends with it.
 //!
 //! The login and character select both happen here, on the connection's
 //! own thread.  They touch account and player files and nothing in the
@@ -411,8 +412,8 @@ fn connection(mut socket: TcpStream, peer: SocketAddr, setup: Arc<Setup>, stoppi
 }
 
 /// Everything after TLS: the login, then character select, until one side
-/// hangs up, the server stops, or the account is logged in from somewhere
-/// else.
+/// hangs up, the server stops, the account is logged in from somewhere
+/// else, or the UDP side lets the player go.
 fn converse(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, started: Instant,
             stopping: &AtomicBool) {
     let peer = talk.peer;
@@ -433,6 +434,14 @@ fn converse(stream: &mut TlsStream, talk: &mut Conversation, setup: &Setup, star
                 scribe::info(Channel::Security,
                              &format!("{} was logged out of {} from somewhere else.", peer, talk.username));
                 let _ = send(stream, &protocol::logged_out_elsewhere());
+                return;
+            }
+            if sessions::let_go(claim) {
+                scribe::info(Channel::Security,
+                             &format!("{} ({}) went quiet over UDP.  Kicked, and logged out.",
+                                      peer,
+                                      talk.username));
+                let _ = send(stream, &protocol::verbal_kick(KickReason::UdpLetGo));
                 return;
             }
         }
