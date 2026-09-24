@@ -25,7 +25,6 @@ use stratum_tools::account::{self, Account};
 use stratum_tools::constellations;
 use stratum_tools::scribe::{self, Channel};
 use stratum_tools::security;
-use stratum_networking;
 use stratum_game::character;
 use stratum_game::player_file;
 use stratum_networking::CharacterSummary;

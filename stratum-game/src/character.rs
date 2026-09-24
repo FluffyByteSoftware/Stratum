@@ -5,8 +5,7 @@
 //! Making a character and deleting one.  This is where the pieces meet:
 //! the name rules and the names list (names.rs), the UUID (Fingerprinter),
 //! the player file (player_file.rs) and the account's reference to the
-//! character (account.rs).  The Launcher's Add Character calls in here,
-//! and later so will character creation over the network.
+//! character (account.rs).
 //!
 //! The order matters, because the two files are written two different ways.
 //! The player file goes through `write_later()`, which can't say whether it

@@ -30,8 +30,6 @@ pub fn check() -> Result<(), String> {
 
 /// True if a client saying it is this version may come in.  It has to match
 /// a line on the list exactly.
-// TODO(udp): udp.rs calls this when a Connect arrives.  Until then nothing
-// does, and the compiler says so.
 pub fn accepted(version: &str) -> bool {
     versions_in(LIST).iter().any(|listed| listed == version)
 }

@@ -24,9 +24,9 @@
 //! connection, and makes that address wait FAILURE_HOLD before its next
 //! try.
 //!
-//! A right password for an account that is already on gets asked what to
 //! do instead: log the other session out, or hang up.  sessions.rs keeps
-//! the list of who is on.
+//! the list of who is on.  A right password on a full server gets told so
+//! and hung up on, with no hold, because it isn't a failed login.
 //!
 //! Then character select.  The player gets their list, and can make a
 //! character, delete one, or pick one to play.  Picking one gets them a
@@ -56,12 +56,12 @@ use stratum_tools::{constellations, security};
 
 use crate::CharacterCalls;
 use crate::protocol::{self, Choice, Packet, PacketType};
-use crate::sessions::{self, Claim};
+use crate::sessions::{self, Claim, Refused};
 use crate::tls;
 
 /// The most connections open at once.  50 players, plus room for a rush of
 /// reconnects after a restart.  A guess.
-const MAX_CONNECTIONS: usize = 100;
+const MAX_CONNECTIONS: usize = 55;
 
 /// How long a new connection gets to finish TLS and log in.  Without it
 /// somebody could open 100 connections and sit there.  A guess.
@@ -526,7 +526,17 @@ fn handle(stream: &mut TlsStream,
             talk.asked_at = None;
             match protocol::read_session_choice(&packet.payload) {
                 Ok(Choice::LogTheOtherOut) => {
-                    talk.claim = Some(sessions::take_over(&talk.username));
+                    let Some(claim) = sessions::take_over(&talk.username) else {
+                        scribe::info(Channel::Security,
+                                     &format!("{}'s other session left while {} was \
+                                     choosing, and the server filled up.  Turned \
+                                     them away.",
+                                              talk.username,
+                                              peer));
+                        let _ = send(stream, &protocol::server_full());
+                        return false;
+                    };
+                    talk.claim = Some(claim);
                     scribe::info(Channel::Security,
                                  &format!("{} logged the other session on {} out.",
                                           peer,
@@ -670,11 +680,11 @@ fn credentials(stream: &mut TlsStream,
     talk.username = username;
 
     match sessions::claim(&talk.username) {
-        Some(claim) => {
+        Ok(claim) => {
             talk.claim = Some(claim);
             welcome(stream, talk, setup)
         }
-        None => {
+        Err(Refused::AlreadyOn) => {
             scribe::info(Channel::Security,
                          &format!("{} is already on somewhere else.  \
                          Asking {} what to do.",
@@ -682,6 +692,14 @@ fn credentials(stream: &mut TlsStream,
             talk.stage = Stage::Choosing;
             talk.asked_at = Some(Instant::now());
             send(stream, &protocol::already_logged_in()).is_ok()
+        }
+        Err(Refused::Full) => {
+            scribe::info(Channel::Security,
+                         &format!("The server is full, with {} on.  Turned {} away.",
+                                  sessions::MAX_LOGGED_IN,
+                                  talk.username));
+            let _ = send(stream, &protocol::server_full());
+            false
         }
     }
 }
@@ -693,8 +711,13 @@ fn log_in(username: &str, password: &str) -> Option<String> {
     let mut account = match account::load_account(username) {
         Ok(Some(account)) => account,
         // No such account, a name that isn't allowed, or a damaged file.
-        // All three are a plain failure, and none of them costs a hash.
-        Ok(None) | Err(_) => return None,
+        // All three are a plain failure.  They still pay for a hash, in the
+        // same line as everybody else, so how long the answer takes says
+        // nothing about which it was.
+        Ok(None) | Err(_) => {
+            security::verify_no_account(password);
+            return None;
+        }
     };
 
     if !security::verify_password(password, &account.password_hash_string) {
@@ -832,6 +855,7 @@ fn enter_world(stream: &mut TlsStream, talk: &mut Conversation,
     }
 
     let character = name.to_ascii_lowercase();
+
     let token = match &talk.claim {
         Some(claim) => sessions::issue_token(claim, &character),
         None => Err("the connection isn't logged in".to_string()),

@@ -4,7 +4,7 @@ Stratum is a game server written in Rust.  It is the authority for a small-scale
 
 ## State of things
 
-A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in sees their characters (three slots), and can make one, delete one, or pick one to play.  Picking one hands them a token for the UDP side -- which doesn't exist yet, so that is as far as anybody gets.  No world, no UDP.  Things will be missing, things will break, and things will change.
+A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in sees their characters (three slots), and can make one, delete one, or pick one to play.  Picking one hands them a token, which their client sends in its first UDP packet, and the server lets them in.  That is as far as anybody gets: there is no world behind the door yet.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
@@ -30,15 +30,15 @@ A Cargo workspace with four crates:
 │                           passwords (Security), UUIDs (Fingerprinter) and
 │                           accounts.
 ├── stratum-networking/     The TCP side (a listener, TLS, the login and
-│                           character select, so far) and the UDP side (not
-│                           written yet).
+│                           character select) and the UDP side (a player's
+│                           first packet, so far).
 ├── stratum-game/           The game: what lives in the world, the character
 │                           files, the character names, and making and
 │                           deleting characters.  The world itself comes later.
 └── stratum-launcher/       The program: starts the tools, runs the admin's menu.
 ```
 
-Probe, a C# console program that pretends to be a game client so the server can be tested without Godot, lives in its own repo.
+Probe, a C# console program that pretends to be a game client so the server can be tested without Godot, lives in its own repo.  So does tick-sim, the benchmark that measured the tick, the logins and saving before any of them were built: github.com/FluffyByteSoftware/tick-sim.  Its `RESULTS.md` has the numbers.
 
 ## Building and running
 

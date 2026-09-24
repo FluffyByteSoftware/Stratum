@@ -23,16 +23,28 @@
 //! writes an account file -- that is the accounts code's job, through
 //! DiskMan.  And it never logs a password, not even a wrong one.
 //!
+//! Every hash in the server goes through one thread, the hashing worker, one
+//! at a time.  Whoever wants a password hashed or checked puts it in line
+//! and waits their turn.  We tried it the other way in tick-sim first, with
+//! every login hashing on its own connection's thread: 50 at once took 1.2
+//! seconds each, and put the whole game tick over budget for as long as they
+//! ran.  One at a time, each took 72 ms, all 50 were done in 3.6 seconds, and
+//! the tick barely noticed.  So nothing hashes outside the line -- not the
+//! logins, and not the Launcher making a new account either.
+//!
 //! A login that fails always says the same thing, whether the name or the
 //! password was wrong.  That is the caller's job.  Ours is the other half:
 //! every login attempt takes the same amount of time, whichever path it
 //! took, so nobody can tell a real name from a made-up one with a stopwatch.
-//! See `pad_login_time()`.
+//! A made-up name still pays for a hash, in the same line as everybody else
+//! (`verify_no_account()`), and `pad_login_time()` evens out the rest.
 //!
 //! Standard library plus one crate: argon2, our first.  Nobody should write
 //! their own password hash, and that includes us.
 
-use std::thread;
+use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use argon2::password_hash::phc::PasswordHash;
@@ -59,9 +71,11 @@ const HASH_PASSES: u32 = 2;
 const HASH_LANES: u32 = 1;
 
 /// How long every login attempt takes, at least, in milliseconds.  It has
-/// to be comfortably above the hash (85 ms, worst 90, more when two run at
-/// once), or a slow hash pokes out over the top and the timing leak is back.
-/// It also caps every connection at a few guesses a second.
+/// to sit above one hash (tick-sim measured 72 ms at full clock, and 118 at
+/// worst), or a slow hash pokes out over the top and the timing leak is
+/// back.  Time spent waiting in line doesn't come into it: a made-up name
+/// waits in the same line, so a long wait says nothing about which kind of
+/// name it was.  It also caps every connection at a few guesses a second.
 const MIN_LOGIN_MILLIS: u64 = 150;
 
 /// The password rules.  Jacob's.  Between the two lengths, printable ASCII
@@ -73,6 +87,141 @@ const MIN_LOGIN_MILLIS: u64 = 150;
 /// hash first.  It is about how big a "password" we let a client send us.
 const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_PASSWORD_CHARS: usize = 128;
+
+// ---------------------------------------------------------------------------
+// The hashing worker
+// ---------------------------------------------------------------------------
+
+/// What a caller hears if the worker died partway through their job.  Only
+/// a crash can cause it.
+const WORKER_GONE: &str = "the hashing worker stopped before it answered";
+
+/// One piece of work in the line, and where its answer goes.
+// Rust note: each job carries the sending half of a little channel of its
+// own.  The worker puts the answer in it, and whoever queued the job is
+// waiting on the other half.
+enum Job {
+    /// Hash a new password.
+    Hash {
+        password: String,
+        answer: Sender<Result<String, String>>,
+    },
+    /// Check a typed password against the line from an account file.
+    Verify {
+        password: String,
+        stored: String,
+        answer: Sender<Result<bool, String>>,
+    },
+    /// Spend one hash's worth of time on a name with no account.  The answer
+    /// only says it is done.
+    NoAccount {
+        password: String,
+        answer: Sender<()>,
+    },
+}
+
+/// The running worker.  Held in WORKER below between start() and stop().
+struct Worker {
+    /// The back of the line.  Letting go of it is what tells the worker to
+    /// finish up.
+    queue: Sender<Job>,
+    handle: JoinHandle<()>,
+}
+
+// Rust note: the same shape as TCP in tcp.rs.  `None` means the worker
+// isn't running.
+static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+
+/// Starts the hashing worker.  Call it once, early, before anything hashes.
+/// If the thread won't start we say so, and every hash runs on whichever
+/// thread asks for it instead -- still one at a time (see `queue_job()`).
+pub fn start() {
+    let mut worker = WORKER.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if worker.is_some() {
+        return;
+    }
+
+    let (queue, jobs) = mpsc::channel();
+    let spawned = thread::Builder::new()
+        .name("security-worker".to_string())
+        .spawn(move || work(jobs));
+    match spawned {
+        Ok(handle) => *worker = Some(Worker { queue, handle }),
+        Err(error) => {
+            scribe::error(Channel::Security,
+                          &format!("Couldn't start the hashing worker ({}).  Every \
+                          hash will run on the thread that asks for it, still one at \
+                          a time.",
+                                   error));
+        }
+    }
+}
+
+/// Stops the worker once it has finished everything already in line, and
+/// waits for it.  Does nothing if it isn't running.
+pub fn stop() {
+    // The lock stays held the whole way through, so nothing can start a hash
+    // of its own while the worker is still finishing the line.
+    let mut worker = WORKER.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(Worker { queue, handle }) = worker.take() else {
+        return;
+    };
+    drop(queue);
+    let _ = handle.join();
+}
+
+/// The worker's thread.  One job at a time, in the order they arrived.
+fn work(jobs: Receiver<Job>) {
+    // Rust note: recv() sleeps until a job arrives.  Once stop() has let go
+    // of the back of the line and the line is empty, it hands back an Err
+    // instead, and that ends the loop and the thread.
+    while let Ok(job) = jobs.recv() {
+        do_job(job);
+    }
+}
+
+/// Puts a job in line.  If the worker isn't running (the tests, or before
+/// start()), or has died, the job gets done right here instead -- while
+/// holding WORKER's lock, so that is still one at a time.
+fn queue_job(job: Job) {
+    // Rust note: the lock is held until this function ends, and that
+    // includes the do_job() at the bottom.
+    let worker = WORKER.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = match worker.as_ref() {
+        Some(running) => match running.queue.send(job) {
+            Ok(()) => return,
+            // The worker has died, and the job comes back to us.
+            Err(mpsc::SendError(job)) => job,
+        },
+        None => job,
+    };
+    do_job(job);
+}
+
+/// Does one job and sends back the answer.  Doesn't log -- the functions
+/// that queued it do that, on their caller's line.
+fn do_job(job: Job) {
+    // Rust note: the sends use `let _ =` because a caller that has stopped
+    // waiting is no reason to stop the worker.
+    match job {
+        Job::Hash { password, answer } => {
+            let _ = answer.send(hash_with(&current_params(), &password));
+        }
+        Job::Verify { password, stored, answer } => {
+            let _ = answer.send(check_password(&password, &stored));
+        }
+        Job::NoAccount { password, answer } => {
+            // Hashing the typed password at our settings costs the same as
+            // checking it against an account made at our settings.  The
+            // hash goes straight in the bin.
+            let _ = hash_with(&current_params(), &password);
+            let _ = answer.send(());
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // What the rest of the server calls
@@ -89,7 +238,8 @@ fn current_params() -> Params {
 }
 
 /// Hashes a new password, with a fresh random salt, and hands back the line
-/// that goes in the account file.  About 85 ms.
+/// that goes in the account file.  About 85 ms, plus however long it waits
+/// in line.
 ///
 /// The salt comes from the operating system's random source, through the
 /// crate.  If that fails (it doesn't, on Linux) there is no safe way to make
@@ -100,7 +250,14 @@ fn current_params() -> Params {
 /// first, and tell the player what they got wrong.
 #[track_caller]
 pub fn hash_password(password: &str) -> Result<String, String> {
-    match hash_with(&current_params(), password) {
+    let (answer, reply) = mpsc::channel();
+    queue_job(Job::Hash { password: password.to_string(), answer });
+    let hashed = match reply.recv() {
+        Ok(hashed) => hashed,
+        Err(_) => Err(WORKER_GONE.to_string()),
+    };
+
+    match hashed {
         Ok(stored) => Ok(stored),
         Err(reason) => {
             scribe::error(Channel::Security,
@@ -113,7 +270,8 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 }
 
 /// Checks a typed password against the line from the account file.  True if
-/// it matches.  About 85 ms, whether it matches or not.
+/// it matches.  About 85 ms, whether it matches or not, plus however long it
+/// waits in line.
 ///
 /// The settings come out of the stored line, not out of the constants above,
 /// so an account hashed under old settings still checks.
@@ -124,13 +282,40 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 /// wrong as far as the caller is concerned.
 #[track_caller]
 pub fn verify_password(password: &str, stored: &str) -> bool {
-    check_password(password, stored).unwrap_or_else(|reason| {
-        scribe::error(Channel::Security,
-                      &format!("Security was handed a stored password hash it \
+    let (answer, reply) = mpsc::channel();
+    queue_job(Job::Verify { password: password.to_string(), stored: stored.to_string(), answer });
+
+    // Rust note: a match rather than unwrap_or_else(), because a log line
+    // inside a closure gives the closure's line instead of our caller's.
+    match reply.recv() {
+        Ok(Ok(matches)) => matches,
+        Ok(Err(reason)) => {
+            scribe::error(Channel::Security,
+                          &format!("Security was handed a stored password hash it \
                           can't read ({}).  That account file is damaged.  \
-                          Treating the password as wrong.", reason));
-        false
-    })
+                          Treating the password as wrong.",
+                                   reason));
+            false
+        }
+        Err(_) => {
+            scribe::error(Channel::Security,
+                          &format!("Security couldn't check a password ({}).  \
+                          Treating it as wrong.",
+                                   WORKER_GONE));
+            false
+        }
+    }
+}
+
+/// For a login whose name has no account.  It waits in the same line as
+/// verify_password() and takes as long, so nobody can tell the two apart by
+/// how long the answer took.  There is nothing to check the password
+/// against, so the answer is always no, and the caller knows that already.
+/// That is why it hands back nothing.
+pub fn verify_no_account(password: &str) {
+    let (answer, reply) = mpsc::channel();
+    queue_job(Job::NoAccount { password: password.to_string(), answer });
+    let _ = reply.recv();
 }
 
 /// Says whether a new password is allowed, and if not, why, in words meant
@@ -176,10 +361,12 @@ pub fn check_password_rules(password: &str) -> Result<(), String> {
 /// attempt arrives, does the work (or skips it, for a name that doesn't
 /// exist), and calls this before answering.
 ///
-/// A real name costs a hash and a made-up name costs nothing, and without
-/// this the reply time says which is which.  With it, every attempt answers
-/// at the same moment.  The waiting happens on the connection's own thread,
-/// so it only ever holds up the one client who is logging in.
+/// Both kinds of name cost a hash, but the paths still differ a little (a
+/// real account gets read off the disk, and a made-up one doesn't), and a
+/// packet we couldn't read costs nothing at all.  This evens all of that
+/// out, so every attempt answers at the same moment.  The waiting happens
+/// on the connection's own thread, so it only ever holds up the one client
+/// who is logging in.
 pub fn pad_login_time(started: Instant) {
     let floor = Duration::from_millis(MIN_LOGIN_MILLIS);
     let spent = started.elapsed();
@@ -331,6 +518,36 @@ mod tests {
         assert_eq!(params.m_cost(), HASH_MEMORY_KIB);
         assert_eq!(params.t_cost(), HASH_PASSES);
         assert_eq!(params.p_cost(), HASH_LANES);
+    }
+
+    #[test]
+    fn the_worker_answers_each_job_and_stops_when_the_line_closes() {
+        // A worker of the test's own, on a line of the test's own, so the
+        // real one never gets touched.
+        let stored = hash_with(&cheap_params(), "In line 1!").unwrap();
+        let (queue, jobs) = mpsc::channel();
+        let worker = thread::spawn(move || work(jobs));
+
+        let (first_answer, first_reply) = mpsc::channel();
+        let (second_answer, second_reply) = mpsc::channel();
+        queue.send(Job::Verify {
+            password: "In line 1!".to_string(),
+            stored: stored.clone(),
+            answer: first_answer,
+        }).unwrap();
+        queue.send(Job::Verify {
+            password: "In line 2!".to_string(),
+            stored,
+            answer: second_answer,
+        }).unwrap();
+
+        assert_eq!(first_reply.recv().unwrap(), Ok(true));
+        assert_eq!(second_reply.recv().unwrap(), Ok(false));
+
+        // Letting go of the line ends the thread.  If it didn't, join()
+        // would never come back and the test would hang.
+        drop(queue);
+        worker.join().unwrap();
     }
 
     #[test]

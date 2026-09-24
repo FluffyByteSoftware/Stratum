@@ -41,8 +41,6 @@ pub const MAX_PACKET_BYTES: usize = 4096;
 /// The biggest UDP packet we take.  Anything much over 1200 bytes risks
 /// getting split up somewhere along the internet, and a lost piece loses
 /// the whole packet.  So we keep ours under it, and refuse one that isn't.
-// TODO(udp): udp.rs is the first thing to use this, and everything else
-// that is only for UDP in here.  Until then the compiler warns about each.
 pub const MAX_UDP_BYTES: usize = 1200;
 
 /// What a client has to say before it gets to try a password.  Not real
@@ -59,6 +57,7 @@ pub const RESULT_AUTHENTICATION_FAILED: u8 = 1;
 /// SessionChoice.  Only ever sent after the right password, so it tells a
 /// stranger nothing.
 pub const RESULT_ALREADY_LOGGED_IN: u8 = 2;
+pub const RESULT_SERVER_FULL: u8 = 3;
 
 /// The string that rides along with each result, for the player to see.
 /// One failure message for everything, so a wrong secret word, a wrong name
@@ -66,6 +65,7 @@ pub const RESULT_ALREADY_LOGGED_IN: u8 = 2;
 pub const SUCCESS_MESSAGE: &str = "Welcome to Stratum.";
 pub const FAILURE_MESSAGE: &str = "Invalid Credentials";
 pub const ALREADY_LOGGED_IN_MESSAGE: &str = "This account is already logged in.";
+pub const SERVER_FULL_MESSAGE: &str = "The server is full.";
 
 /// The first byte of a CharacterResult.  Unlike the login, a refusal here
 /// comes with the real reason, because the player is already in.
@@ -321,6 +321,14 @@ pub fn already_logged_in() -> Vec<u8> {
     frame(PacketType::AuthenticationResult, &payload)
 }
 
+/// An AuthenticationResult of 3: the password was right, and the server is
+/// full.
+pub fn server_full() -> Vec<u8> {
+    let mut payload = vec![RESULT_SERVER_FULL];
+    put_string(&mut payload, SERVER_FULL_MESSAGE);
+    frame(PacketType::AuthenticationResult, &payload)
+}
+
 pub fn logged_out_elsewhere() -> Vec<u8> {
     frame(PacketType::LoggedOutElsewhere, &[])
 }
@@ -472,6 +480,15 @@ mod tests {
         let mut at = 1;
         assert_eq!(take_string(&packet.payload, &mut at), Ok(ALREADY_LOGGED_IN_MESSAGE.to_string()));
         assert_eq!(finished(&packet.payload, at), Ok(()));
+    }
+
+    #[test]
+    fn server_full_is_result_three() {
+        // The same bytes docs/PROTOCOL.md shows.  The length is 32: the type,
+        // the result, 4 for the string's length, and 26 for the message.
+        let mut expected = vec![25, 0, 0, 0, 0x14, 3, 19, 0, 0, 0];
+        expected.extend_from_slice(SERVER_FULL_MESSAGE.as_bytes());
+        assert_eq!(server_full(), expected);
     }
 
     #[test]

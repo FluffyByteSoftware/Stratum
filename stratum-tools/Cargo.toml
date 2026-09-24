@@ -1,8 +1,9 @@
 # File:     stratum-tools/Cargo.toml
 # Project:  Stratum Core
 # Author:   Jacob Chacko
-# The tools every part of Stratum shares, as a library.  The Launcher and
-# the networking both use them.
+#
+# The tools every part of Stratum shares, as a library.  The Launcher, the
+# networking and the game all use them.
 
 [package]
 name = "stratum-tools"

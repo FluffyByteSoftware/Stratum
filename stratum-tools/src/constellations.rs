@@ -619,13 +619,14 @@ fn file_text(settings:&Settings) -> String {
     of, falls\n");
     text.push_str("# back to the built-in default, and the server log says so.\n");
     text.push_str("\n");
-
-    text.push_str("# The folder the server keeps everything in: logs/, accounts/ and \
-    saved/ssl/.\n");
-    text.push_str("# Missing folders get made at launch.  This one only changes at \
-    launch, and it\n");
-    text.push_str("# doesn't move this file, which always lives in \
-    /opt/stratum/content/config/.\n");
+    text.push_str("# The folder the server keeps everything in: logs/, accounts/, \
+    saved/ssl/\n");
+    text.push_str("# and saved/players/.  Missing folders get made at launch.  This one \
+    only\n");
+    text.push_str("# changes at launch, and it doesn't move this file, which always lives \
+    in\n");
+    text.push_str("# /opt/stratum/content/config/.\n");
+    
     text.push_str(&format!("CONTENT_FOLDER={}\n", settings.content_folder.display()));
     text.push_str("\n");
 

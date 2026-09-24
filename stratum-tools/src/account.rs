@@ -11,7 +11,7 @@
 //!
 //! An account file is always written with `diskman::write_file()`, never
 //! `write_later()`.  We want to know the account landed before we say it
-//! exists, and the character files will be the `write_later()` kind.
+//! exists, and the player files are the `write_later()` kind.
 //! DiskMan says never both on one path.
 //!
 //! Every account also gets its own UUID (`account_uid`), so anything that
@@ -32,7 +32,6 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,10 +44,10 @@ use crate::constellations;
 // ---------------------------------------------------------------------------
 // The numbers
 // ---------------------------------------------------------------------------
-/// The account file's extension. The file for "jacob" is 'jacob.act' in the folder
-/// Constellations says.
-const ACCOUNT_EXTENSION: &str = "act";
 
+/// The account file's extension.  The file for "jacob" is jacob.act, in the
+/// folder Constellations says.
+const ACCOUNT_EXTENSION: &str = "act";
 const MIN_USERNAME_CHARS: usize = 4;
 const MAX_USERNAME_CHARS: usize = 16;
 
@@ -311,7 +310,7 @@ fn write_new_account(username: String, password: &str, email: &str, real_name: &
         birthday: birthday.to_string(),
         account_uid,
         characters: Vec::new(),
-        created_at: now_seconds(),
+        created_at: scribe::now_seconds(),
         last_login: 0,
     };
 
@@ -494,7 +493,7 @@ pub fn change_password(account: &mut Account, new_password: &str) -> Result<(), 
 /// Stamps the account with the time of this login and saves it.  Only for a
 /// login that got the password right.
 pub fn record_login(account: &mut Account) -> io::Result<()> {
-    account.last_login = now_seconds();
+    account.last_login = scribe::now_seconds();
     save_account(account)
 }
 
@@ -658,18 +657,6 @@ fn account_from_text(text: &str, username: &str) -> Result<Account, String> {
     }
 
     Ok(account)
-}
-
-// ---------------------------------------------------------------------------
-// Small pieces
-// ---------------------------------------------------------------------------
-
-fn now_seconds() -> u64 {
-    // Only fails on a clock set before 1970.  Same answer as Scribe gives.
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(since_1970) => since_1970.as_secs(),
-        Err(_) => 0,
-    }
 }
 
 // ---------------------------------------------------------------------------

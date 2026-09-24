@@ -2,7 +2,7 @@
 # Project:  Stratum Game
 # Author:   Jacob Chacko
 #
-# The game, as a library.  What lives in the world: the pawns, the player
+# The game, as a library.  What lives in the world: the actors, the player
 # files and the character names.  The world itself comes later.
 
 [package]

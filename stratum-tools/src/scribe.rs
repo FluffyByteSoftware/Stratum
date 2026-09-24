@@ -3,10 +3,9 @@
 //! Author:   Jacob Chacko
 //!
 //! Scribe is the logger.  Anything in the server can call it, and every
-//! message goes two places: the terminal (in color) and a log file (plain).
-//! The log file appends, and it rolls over to a new file at midnight UTC or
-//! when it hits the size limit -- whichever comes first.
-//!
+//! message goes to a log file.  Warn and Error go to the terminal too, in
+//! color.  The log file appends, and it rolls over to a new file at midnight
+//! UTC or when it hits the size limit -- whichever comes first.
 //! All time in here is UTC, and every timestamp ends in Z to say so.
 //!
 //! Every line also ends with the file and line number it was logged from, so
@@ -576,7 +575,7 @@ fn complain(scribe: &mut Scribe, reason: &str) {
     write_to_terminal(&scribe.config, Priority::Error, &line);
 
     if let Some(file) = scribe.file.as_mut() {
-        if writeln!(file, "{}", line).is_ok() {
+        if file.write_all(format!("{}\n", line).as_bytes()).is_ok() {
             scribe.file_bytes += line.len() as u64 + 1;
         }
     }
@@ -585,6 +584,17 @@ fn complain(scribe: &mut Scribe, reason: &str) {
 // ---------------------------------------------------------------------------
 // Time
 // ---------------------------------------------------------------------------
+
+/// Seconds since 1970, right now.  The account and the player file stamp
+/// their files with this, so every stored time comes off the one clock that
+/// `time_text()` reads back.  Only fails on a clock set before 1970, and
+/// then it says 0, the same as the log's dates.
+pub fn now_seconds() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(since_1970) => since_1970.as_secs(),
+        Err(_) => 0,
+    }
+}
 
 /// A time in seconds since 1970 as a date a person can read, like
 /// `2026-09-21T20:14:07Z`.  No milliseconds -- this is for times we store,

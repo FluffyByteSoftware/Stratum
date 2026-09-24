@@ -3,8 +3,8 @@
 //! Author:   Jacob Chacko
 //!
 //! DiskMan, the Disk Manager.  The one place the server goes through to
-//! replace a whole file, to read one back, and to delete one.  A file is a
-//! path and its contents as bytes (a StratumFile).
+//! replace a whole file, to read one back, to delete one, and to make a
+//! folder.  A file is a path and its contents as bytes (a StratumFile).
 //!
 //! We never write a file in place.  We write `path.tmp`, force it onto the
 //! disk, and then rename it over `path`.  If the server dies halfway through,
@@ -36,8 +36,19 @@
 //! and dropped, so a broken disk costs saves but never stalls the game.
 //!
 //! When the cache is full (MAX_CACHE_FILES or MAX_CACHE_BYTES), write_later()
-//! waits until the writer makes room.  At 50 players, with one copy per path,
-//! that should almost never happen.
+//! waits until the writer makes room.  Player saves, one copy per path,
+//! should almost never fill it.  The world's chunks can: tick-sim saved one
+//! file per chunk on the spinning drive, filled the cache for its whole run,
+//! and piled about 4 GiB of work up behind it.  So the game's tick never
+//! calls write_later() for anything in bulk.  It hands its saves to a thread
+//! of its own, and that thread calls write_later().
+//!
+//! The writer goes as fast as the drive lets it, and on a fast drive that
+//! is its own problem.  A copy only gets replaced while it is waiting, and
+//! on the NVMe almost nothing waits: tick-sim wrote 58 GiB there in one
+//! minute, which would wear out an SSD in weeks if the server ever wrote
+//! like that.  How often a file gets saved is up to whoever saves it, until
+//! DiskMan has a minimum time between writes of the same path.
 //!
 //! Anything that replaces a whole file comes through here.  Scribe's log
 //! files are the one exception -- Scribe appends, which is a different job,
@@ -251,8 +262,9 @@ pub fn stop() {
 }
 
 /// Waits until everything in the cache has been written (or dropped).  The
-/// server keeps running and the writer keeps going.  Nothing calls this yet
-/// -- it is for things like an admin "save everything now".
+/// server keeps running and the writer keeps going.  stratum-game calls it
+/// before it looks for a new player file on the disk, and before it deletes
+/// one.  An admin "save everything now" would call it too.
 pub fn flush() {
     let mut guard = CACHE.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -273,15 +285,19 @@ pub fn flush() {
 /// Hands a file to the cache and comes straight back.  The writer thread
 /// writes it as soon as it can.  If the same path is already waiting, this
 /// copy replaces it.
-///
 /// If the cache is full this waits until the writer has made room.  If the
 /// writer is stopped (or never started) the file gets written on the spot.
+/// So the game's tick never calls this for anything in bulk (see the top of
+/// the file).
 ///
 /// Don't use this and write_file() on the same path.  A write_file() could
 /// land first and then get written over by an older copy from the cache.
 // Rust note: this takes the StratumFile itself and not a `&` to it, so the
 // bytes move into the cache without being copied.  The caller can't use the
 // file after handing it over, and the compiler will say so if they try.
+// TODO(save-rate): a minimum time between writes of the same path, so a
+// fast drive doesn't write the same file many times a second.  Jacob's
+// call, from tick-sim: DiskMan decides, not the caller.  Session 18.
 #[track_caller]
 pub fn write_later(file: StratumFile) {
     let mut guard = CACHE.lock()
@@ -1079,20 +1095,6 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
     }
 
-    // -----------------------------------------------------------------------
-    // The benchmark
-    // -----------------------------------------------------------------------
-
-    /// Where the benchmark writes.  It has to be the real content folder and
-    /// not the system temp folder, because the whole point is to time the
-    /// drive the saves will actually live on.
-    const BENCH_FOLDER: &str = "/opt/stratum/content/bench";
-
-    /// How many saves, and how big each one is.  8 KB is a guess at a player
-    /// file.  Nobody knows yet.
-    const BENCH_SAVES: usize = 50;
-    const BENCH_BYTES: usize = 8 * 1024;
-
     #[test]
     fn a_private_file_is_private_from_the_start() {
         use std::os::unix::fs::PermissionsExt;
@@ -1122,6 +1124,20 @@ mod tests {
 
         let _ = fs::remove_dir_all(&folder);
     }
+    
+    // -----------------------------------------------------------------------
+    // The benchmark
+    // -----------------------------------------------------------------------
+
+    /// Where the benchmark writes.  It has to be the real content folder and
+    /// not the system temp folder, because the whole point is to time the
+    /// drive the saves will actually live on.
+    const BENCH_FOLDER: &str = "/opt/stratum/content/bench";
+
+    /// How many saves, and how big each one is.  8 KB was a guess at a
+    /// player file, made before there were any.
+    const BENCH_SAVES: usize = 50;
+    const BENCH_BYTES: usize = 8 * 1024;
     
     /// Times 50 player-sized saves, several ways, on the real drive.  Not part
     /// of a normal `cargo test` -- run it by hand:

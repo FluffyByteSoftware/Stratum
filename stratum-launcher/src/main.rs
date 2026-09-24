@@ -4,15 +4,16 @@
 //!
 //! Entry point.  Core is the driver: it starts up, brings the other pieces
 //! online in order, and gets the game ready for play.  Right now the pieces
-//! are Scribe, Constellations, Security, Launcher, Account, DiskMan, and
-//! the game's character names.
+//! are Scribe, DiskMan, Constellations, Security's hashing worker, the
+//! account, the game's character names, and the Launcher, in that order.
+//! Fingerprinter has nothing to start.
 
 // Rust note: `mod launcher;` tells the compiler that src/launcher.rs is part
 // of this program.  The tools aren't named here any more -- they are their
 // own crate now, and the `use` lines below reach into it.
 mod launcher;
 
-use stratum_tools::{account, constellations, diskman, scribe};
+use stratum_tools::{account, constellations, diskman, scribe, security};
 use stratum_tools::scribe::{Channel, ScribeConfig};
 
 /// The main entry point for the server.  This is where the program starts
@@ -24,16 +25,20 @@ fn main() {
     // Then DiskMan's writer thread, so anything that saves from here on has
     // somewhere to put it.
     diskman::start();
-    
+
     // Then the settings.  Scribe had to come up on its built-in defaults,
     // because it has to be there before Constellations is.  Now that the
     // config file is loaded, Scribe gets the real ones.
     constellations::load();
     initialize_scribe();
-    
-    // The folders inside the content folder: logs, accounts, saved/ssl.
-    // Any that are missing get made now.
+
+    // The folders inside the content folder: logs, accounts, saved/ssl and
+    // saved/players.  Any that are missing get made now.
     constellations::make_folders();
+
+    // Then Security's hashing worker, before anything can hash a password.
+    // It only needs Scribe, for its complaints.
+    security::start();
 
     let settings = constellations::get();
     scribe::info(Channel::Core, &format!("TCP is configured for {}:{}",
@@ -53,12 +58,16 @@ fn main() {
     // Then which character names are, which the game learns from the
     // accounts.  So it has to come after them.
     stratum_game::names::start();
-    
-    // the admin's menu. It runs until they pick Q, and then we shut down.
+
+    // The admin's menu.  It runs until they pick Q, and then we shut down.
     launcher::run();
-    
+
     scribe::info(Channel::Core, "Shutting down...");
-    
+
+    // The hashing worker finishes anything still in line, then stops.  Q only
+    // works with the server stopped, so nothing new can join the line.
+    security::stop();
+
     // Last thing on the way out: whatever settings are in memory go back to
     // the config file.
     constellations::save();
