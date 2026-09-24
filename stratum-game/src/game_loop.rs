@@ -17,17 +17,20 @@
 //! the login worker gets its jobs.  That comes later, from the Networking
 //! project.
 //!
-//! Nothing runs on the tick yet.  For now the loop keeps time, owns an empty
-//! world, and says at the end how long its ticks took.
+//! Nothing real runs on the tick yet.  For now the loop keeps time, runs the
+//! chat room (chat_room.rs, a test), and says at the end how long its ticks
+//! took.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use bevy_ecs::prelude::World;
+use bevy_ecs::prelude::{Entity, World};
 use stratum_cycle::{Clock, Tick, TICK_MS};
 use stratum_tools::scribe::{self, Channel};
+
+use crate::chat_room;
 
 /// The loop's thread, while it runs.  `None` when the world is stopped.
 static THREAD: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -81,6 +84,7 @@ fn run() {
     let mut world = World::new();
     let mut clock = Clock::start();
     let mut stats = TickStats::default();
+    let chatters = chat_room::open(&mut world);
 
     scribe::info(Channel::World, &format!("The world is ticking, every {} ms.", TICK_MS));
 
@@ -96,7 +100,7 @@ fn run() {
         }
 
         let began = Instant::now();
-        run_tick(&mut world, &tick);
+        run_tick(&mut world, &tick, &chatters);
         stats.record(began.elapsed(), tick.clock_reset);
     }
 
@@ -105,11 +109,11 @@ fn run() {
 
 /// One tick's work.  Whatever runs every tick goes at the top, and whatever
 /// runs once a round goes under its sub-tick.
-// Rust note: the underscores tell the compiler we know these aren't used
-// yet.  They come off when the first piece of work goes in.
-// TODO(tick-work): nothing runs on the tick yet.  Movement and combat every
-// tick, and the rest spread across the sub-tick slots.
-fn run_tick(_world: &mut World, _tick: &Tick) {}
+// TODO(tick-work): nothing real runs on the tick yet.  Movement and combat
+// every tick, and the rest spread across the sub-tick slots.
+fn run_tick(world: &mut World, tick: &Tick, chatters: &[Entity]) {
+    chat_room::speak(world, chatters, tick.number);
+}
 
 /// How the ticks went, for the line in the log when the loop stops.  The
 /// time is the work alone, not the sleeping.  tick-sim's rule is an

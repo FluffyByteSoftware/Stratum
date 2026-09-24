@@ -16,3 +16,4 @@ pub mod character;
 pub mod names;
 pub mod player_file;
 pub mod game_loop;
+mod chat_room;

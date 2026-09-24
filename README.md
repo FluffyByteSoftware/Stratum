@@ -4,12 +4,13 @@ Stratum is a game server written in Rust.  It is the authority for a small-scale
 
 ## State of things
 
-A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in sees their characters (three slots), and can make one, delete one, or pick one to play.  Picking one hands them a token, which their client sends in its first UDP packet, and the server lets them in.  Password checks run one at a time, on a thread of their own, so a rush of logins can't stall the game (we measured that before building it), and the server takes 50 players at once.  That is as far as anybody gets: there is no world behind the door yet.  Things will be missing, things will break, and things will change.
+A hobby project by one person, and early days.  What exists is mostly the plumbing: a logger, a config file, safe file writes, password hashing, accounts, and an admin's menu in the terminal.  The server starts, reads its settings and its account files, and hands the terminal to the menu, where the admin can make and manage accounts, give them characters, and change settings.  Each character is saved in a file of its own.  "Start server" opens a TCP port, and every connection gets a thread of its own, a TLS handshake and a login against the account files.  A player who gets in sees their characters (three slots), and can make one, delete one, or pick one to play.  Picking one hands them a token, which their client sends in its first UDP packet, and the server lets them in.  Password checks run one at a time, on a thread of their own, so a rush of logins can't stall the game (we measured that before building it), and the server takes 50 players at once.  Behind the door, the world ticks: 20 times a second while the server runs, caught up when a tick runs late, and so far with nothing in it.  That is as far as anybody gets, because nothing hands a player through yet.  Things will be missing, things will break, and things will change.
 
 ## The plan, briefly
 
 - UDP for game traffic, TCP for logins.  The TCP side is TLS from the first byte, so a password never crosses the wire in the clear.  The TCP connection stays open afterwards for chat, and as the fallback.
 - Plain threads, not async.  One thread per connection.  We measured 50 of them against a pretend game loop, and the game loop didn't notice.
+- The game runs on a tick, every 50 ms, on a thread of its own.  Five ticks make a round, and each piece of work takes its turn on one of them, so no single tick carries everything.  A tick that runs late isn't skipped: the ones it held up run straight after it until the clock catches up.
 - Built for about 50 players at peak.  This is not an MMO.
 - The world is chunked into zones and generated procedurally.
 - Flat files in the LPC tradition.  No database.  A crash rolls players back to their last save.  It never corrupts one.
@@ -19,7 +20,7 @@ A hobby project by one person, and early days.  What exists is mostly the plumbi
 
 ## Layout
 
-A Cargo workspace with four crates:
+A Cargo workspace with five crates:
 
 ```
 ├── Cargo.toml              The workspace.
@@ -33,8 +34,11 @@ A Cargo workspace with four crates:
 │                           character select) and the UDP side (a player's
 │                           first packet, so far).
 ├── stratum-game/           The game: what lives in the world, the character
-│                           files, the character names, and making and
-│                           deleting characters.  The world itself comes later.
+│                           files, the character names, making and deleting
+│                           characters, and the game loop that runs the tick.
+│                           The world itself comes later.
+├── stratum-cycle/          The tick's clock.  It says when the next tick is
+│                           due, and depends on nothing.
 └── stratum-launcher/       The program: starts the tools, runs the admin's menu.
 ```
 
@@ -92,7 +96,7 @@ ssh you@server
 tmux attach -t stratum
 ```
 
-The menu is where you left it.  Quit with Q from the menu, not by closing the session -- Q is what saves the config and finishes any writes.
+The menu is where you left it.  Quit with Q from the menu, not by closing the session -- Q is what saves the config and finishes any writes.  Ctrl-C does nothing, on purpose, so it can't skip that by accident.  If the menu itself is stuck, Ctrl-\ still kills it.
 
 Developed on Linux.  Nothing has been tried anywhere else.
 
