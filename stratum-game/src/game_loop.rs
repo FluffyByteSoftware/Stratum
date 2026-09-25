@@ -23,6 +23,11 @@
 //! When the loop stops, networking is already down and nobody is coming or
 //! going, so whoever is still in gets saved on the way out.
 //!
+//! The voxel world (world.rs) is loaded from its folder at S), before the
+//! thread starts, and a world that won't load stops the server from
+//! starting: there is nothing for a player to stand in.  It goes on the
+//! `World` as a resource, and comes down with it at stop.
+//!
 //! Nothing else runs on the tick yet.  For now the loop keeps time, runs
 //! the chat room (chat_room.rs, a test), and says at the end how long its
 //! ticks took.
@@ -43,7 +48,9 @@ use stratum_tools::scribe::{self, Channel};
 
 use crate::actor::Player;
 use crate::chat_room;
+use crate::chunk::{AIR, BlockId, CHUNK_SIDE};
 use crate::player_file;
+use crate::world::{self, VoxelWorld};
 
 /// The loop's thread, while it runs.  `None` when the world is stopped.
 static THREAD: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -68,7 +75,12 @@ type Players = HashMap<String, Stay>;
 /// Starts the game loop on its own thread.  `from_net` is the receiving
 /// end of the queue the Launcher made; the thread keeps it.  If the loop
 /// is already running, this does nothing and the receiver is dropped.  An
-/// `Err` says why the thread couldn't be started.
+/// `Err` says why the world couldn't be loaded, or the thread couldn't be
+/// started.
+///
+/// The world is loaded here, on the caller's thread, so that a world that
+/// won't load is an `Err` the Launcher can show, and not a crash in a
+/// thread nobody is watching.
 pub fn start(from_net: Receiver<GameMessage>) -> Result<(), String> {
     let mut guard = THREAD.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -76,8 +88,10 @@ pub fn start(from_net: Receiver<GameMessage>) -> Result<(), String> {
         return Ok(());
     }
 
+    let voxel_world = world::load()?;
+
     STOP.store(false, Ordering::SeqCst);
-    match thread::Builder::new().name("game-tick".to_string()).spawn(move || run(from_net)) {
+    match thread::Builder::new().name("game-tick".to_string()).spawn(move || run(from_net, voxel_world)) {
         Ok(handle) => {
             *guard = Some(handle);
             Ok(())
@@ -109,12 +123,17 @@ pub fn stop() {
 
 /// The loop itself, on the `game-tick` thread.  The world lives here and
 /// nowhere else.
-fn run(from_net: Receiver<GameMessage>) {
+fn run(from_net: Receiver<GameMessage>, voxel_world: VoxelWorld) {
     let mut world = World::new();
     let mut players: Players = HashMap::new();
     let mut clock = Clock::start();
     let mut stats = TickStats::default();
     let chatters = chat_room::open(&mut world);
+
+    // One look at the middle of the map before it goes in, so the log
+    // shows the loaded blocks are where the generator put them.
+    scribe::info(Channel::World, &whats_under_the_middle(&voxel_world));
+    world.insert_resource(voxel_world);
 
     scribe::info(Channel::World, &format!("The world is ticking, every {} ms.", TICK_MS));
 
@@ -155,6 +174,38 @@ fn run_tick(world: &mut World,
             from_net: &Receiver<GameMessage>) {
     take_messages(world, players, from_net);
     chat_room::speak(world, chatters, tick.number);
+}
+
+/// What the middle of the map is standing on, for the log: the top solid
+/// block in that column and its name.
+fn whats_under_the_middle(voxel_world: &VoxelWorld) -> String {
+    let header = &voxel_world.header;
+    let side = CHUNK_SIDE as i32;
+    let x = (header.first_chunk[0] + header.last_chunk[0] + 1) * side / 2;
+    let z = (header.first_chunk[2] + header.last_chunk[2] + 1) * side / 2;
+    let sky = (header.last_chunk[1] + 1) * side;
+
+    match top_solid_block(voxel_world, x, z, sky) {
+        Some((y, block)) => {
+            let name = voxel_world.blocks.name_of(block).unwrap_or("something unnamed");
+            format!("The middle of the map, ({}, {}), stands on {} at y = {}.", x, z, name, y)
+        }
+        None => format!("The middle of the map, ({}, {}), has nothing under it at all.", x, z),
+    }
+}
+
+/// The highest block that isn't air in a column, looking down from
+/// `from`, and its height.  `None` if the column is air all the way down
+/// to the bottom of the world.
+fn top_solid_block(voxel_world: &VoxelWorld, x: i32, z: i32, from: i32) -> Option<(i32, BlockId)> {
+    let bottom = voxel_world.header.first_chunk[1] * CHUNK_SIDE as i32;
+    for y in (bottom..from).rev() {
+        let block = voxel_world.block_at(x, y, z);
+        if block != AIR {
+            return Some((y, block));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -338,11 +389,25 @@ fn in_ms(time: Duration) -> f64 {
 
 // The thread isn't tested here: it logs, and tests stay out of the global
 // state.  Neither are enter() and leave(), which read and write player
-// files through DiskMan.  The Launcher is their test.  What's tested is
-// the counting.
+// files through DiskMan, nor start(), which loads the world.  The Launcher
+// is their test.  What's tested is the counting, and the look at the
+// middle of the map, on a world generated in memory.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocks::GRASS;
+    use crate::world::GROUND_LEVEL;
+
+    #[test]
+    fn the_middle_of_the_map_stands_on_grass() {
+        let voxel_world = VoxelWorld::generate(1, 1);
+        let (y, block) = top_solid_block(&voxel_world, 128, 128, 128).unwrap();
+        assert_eq!(block, GRASS);
+        assert!((GROUND_LEVEL - 1..=GROUND_LEVEL + 1).contains(&y));
+
+        let line = whats_under_the_middle(&voxel_world);
+        assert!(line.starts_with("The middle of the map, (128, 128), stands on grass at y = "), "{}", line);
+    }
 
     #[test]
     fn no_ticks_is_no_time() {

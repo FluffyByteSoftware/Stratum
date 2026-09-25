@@ -38,8 +38,9 @@ fn main() {
     initialize_scribe();
 
     // The folders inside the content folder: logs, accounts, saved/ssl (which
-    // only our user can open), saved/players and saved/orphaned/players.  Any
-    // that are missing get made now, and any .tmp a crash left in them goes.
+    // only our user can open), saved/players, saved/orphaned/players and
+    // saved/world.  Any that are missing get made now, and any .tmp a crash
+    // left in them goes.
     constellations::make_folders();
 
     // Then Security's hashing worker, before anything can hash a password.
@@ -64,6 +65,10 @@ fn main() {
     // Then which character names are, which the game learns from the
     // accounts.  So it has to come after them.
     stratum_game::names::start();
+    
+    // Then the world.  If there isn't one on the disk yet, it gets generated
+    // and written now, before anybody can start the server.
+    stratum_game::world::start();
 
     // The admin's menu.  It runs until they pick Q, and then we shut down.
     launcher::run();

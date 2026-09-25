@@ -79,6 +79,7 @@ const ACCOUNT_SUBFOLDER: &str = "accounts";
 const SSL_SUBFOLDER: &str = "saved/ssl";
 const PLAYER_SUBFOLDER: &str = "saved/players";
 const ORPHANED_PLAYER_SUBFOLDER: &str = "saved/orphaned/players";
+const WORLD_SUBFOLDER: &str = "saved/world";
 
 // ---------------------------------------------------------------------------
 // The settings
@@ -361,6 +362,13 @@ pub fn orphaned_player_folder() -> PathBuf {
     get().content_folder.join(ORPHANED_PLAYER_SUBFOLDER)
 }
 
+/// Where the world lives, inside the content folder: its header, its block
+/// types, and its region files.  The game generates it at launch if the
+/// folder is empty.
+pub fn world_folder() -> PathBuf {
+    get().content_folder.join(WORLD_SUBFOLDER)
+}
+
 /// Makes every folder the content folder is supposed to have, if it isn't
 /// there already, and clears out any `.tmp` files a crash left behind in
 /// them.  main() calls this once, after load(), before anything can save.
@@ -377,10 +385,11 @@ pub fn make_folders() {
     let _ = diskman::make_private_folder(&ssl_folder());
     let _ = diskman::make_folder(&player_folder());
     let _ = diskman::make_folder(&orphaned_player_folder());
+    let _ = diskman::make_folder(&world_folder());
 
     // Not the log folder.  Scribe is already running by now, and it makes
     // its latest.log link under a temp name of its own.
-    for folder in [account_folder(), ssl_folder(), player_folder(), orphaned_player_folder()] {
+    for folder in [account_folder(), ssl_folder(), player_folder(), orphaned_player_folder(), world_folder()] {
         diskman::clear_leftovers(&folder);
     }
 }
@@ -674,8 +683,8 @@ fn file_text(settings:&Settings) -> String {
     text.push_str("\n");
     text.push_str("# The folder the server keeps everything in: logs/, accounts/, \
     saved/ssl/,\n");
-    text.push_str("# saved/players/ and saved/orphaned/players/.  Missing folders get \
-    made at\n");
+    text.push_str("# saved/players/, saved/orphaned/players/ and saved/world/.  Missing \
+    folders get made at\n");
     text.push_str("# launch.  This one only changes at launch, and it doesn't move this \
     file,\n");
     text.push_str("# which always lives in /opt/stratum/content/config/.\n");

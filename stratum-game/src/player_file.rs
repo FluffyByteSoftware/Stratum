@@ -286,7 +286,7 @@ pub fn read_back(world: &World, entity: Entity) -> Option<PlayerFile> {
 // Small pieces
 // ---------------------------------------------------------------------------
 
-fn now_seconds() -> u64 {
+pub(crate) fn now_seconds() -> u64 {
     // Only fails on a clock set before 1970.  Same answer as the account
     // and Scribe give.
     match SystemTime::now().duration_since(UNIX_EPOCH) {
